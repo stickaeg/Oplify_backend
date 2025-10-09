@@ -92,17 +92,10 @@ async function scanItemCutter(req, res) {
     const userId = req.session.userId;
     const role = req.session.role;
 
-    // ✅ Check if user is logged in
-    if (!userId) {
-      return res.redirect(`${process.env.FRONTEND_URL}/login`);
-    }
-
-    // ✅ Role-based access
-    if (role !== "CUTTER") {
+    if (!userId) return res.redirect(`${process.env.FRONTEND_URL}/login`);
+    if (role !== "CUTTER")
       return res.redirect(`${process.env.FRONTEND_URL}/error`);
-    }
 
-    // ✅ Find batch item by token
     const batchItem = await prisma.batchItem.findFirst({
       where: { qrCodeToken: token },
       include: {
@@ -113,7 +106,6 @@ async function scanItemCutter(req, res) {
           },
         },
         batch: {
-          select: { id: true, name: true, status: true },
           include: {
             items: { select: { id: true, status: true } },
           },
@@ -121,11 +113,8 @@ async function scanItemCutter(req, res) {
       },
     });
 
-    if (!batchItem) {
-      return res.redirect(`${process.env.FRONTEND_URL}`);
-    }
+    if (!batchItem) return res.redirect(`${process.env.FRONTEND_URL}`);
 
-    // ✅ Ensure batch/item is PRINTED before cutting
     if (
       batchItem.status !== "PRINTED" &&
       batchItem.batch.status !== "PRINTED"
@@ -133,7 +122,6 @@ async function scanItemCutter(req, res) {
       return res.redirect(`${process.env.FRONTEND_URL}/error`);
     }
 
-    // ✅ Update item status to CUT in a transaction
     await prisma.$transaction(async (tx) => {
       await tx.batchItem.update({
         where: { id: batchItem.id },
@@ -147,7 +135,6 @@ async function scanItemCutter(req, res) {
 
       await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
 
-      // ✅ Check if all items in batch are now CUT
       const allItems = batchItem.batch.items;
       const allCut = allItems.every((item) =>
         item.id === batchItem.id ? true : item.status === "CUT"
@@ -164,7 +151,6 @@ async function scanItemCutter(req, res) {
 
     console.log(`✅ Cutter ${userId} marked item ${batchItem.id} as CUT`);
 
-    // ✅ Redirect to frontend batch page
     return res.redirect(
       `${process.env.FRONTEND_URL}/batches/${batchItem.batchId}`
     );
