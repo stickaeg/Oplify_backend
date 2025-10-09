@@ -14,7 +14,7 @@ async function generateBatchQRCodes(batchId) {
   // Generate batch QR (for printer)
   const batchToken = crypto.randomBytes(16).toString("hex");
   const batchQrUrl = await QRCode.toDataURL(
-    `${process.env.BACKEND_URL}/api/scan/batch/${batchToken}`
+    `${process.env.HOST}/api/scan/batch/${batchToken}`
   );
 
   await prisma.batch.update({
@@ -29,7 +29,7 @@ async function generateBatchQRCodes(batchId) {
 
     // For cutter (cutting phase)
     const qrUrl = await QRCode.toDataURL(
-      `${process.env.BACKEND_URL}/api/scan/item/${token}`
+      `${process.env.HOST}/api/scan/item/${token}`
     );
 
     await prisma.batchItem.update({
