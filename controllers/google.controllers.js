@@ -1,18 +1,19 @@
 const { Storage } = require("@google-cloud/storage");
-const path = require("path");
 const mime = require("mime-types");
 const prisma = require("../prisma/client");
-// Service account key and bucket name
-const KEYFILEPATH = path.join(
-  __dirname,
-  "../services/crm_account_services.json"
-);
+
 const BUCKET_NAME = "oplify";
 
-// Initialize Cloud Storage with service account
-const storage = new Storage({
-  keyFilename: KEYFILEPATH,
-});
+// Use JSON credentials from environment
+const credentials = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
+  ? JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON)
+  : undefined;
+
+const storage = new Storage(
+  credentials
+    ? { credentials }
+    : { keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS }
+);
 
 const bucket = storage.bucket(BUCKET_NAME);
 
