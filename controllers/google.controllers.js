@@ -5,16 +5,24 @@ const prisma = require("../prisma/client");
 const BUCKET_NAME = "oplify";
 
 // Use JSON credentials from environment
-const credentials = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
-  ? JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON)
-  : undefined;
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  const credentials = JSON.parse(
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
+  );
 
-const storage = new Storage(
-  credentials
-    ? { credentials }
-    : { keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS }
-);
-
+  storage = new Storage({
+    credentials,
+    projectId: credentials.project_id, // 🟢 required in some cases
+  });
+} else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  // Fallback: local file for dev
+  storage = new Storage({
+    keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+  });
+} else {
+  // Fallback: default credentials (if using Google Cloud runtime)
+  storage = new Storage();
+}
 const bucket = storage.bucket(BUCKET_NAME);
 
 // Upload a file
