@@ -37,9 +37,7 @@ async function scanBatch(req, res) {
     // ✅ Role-based status logic
     if (role === "PRINTER") {
       if (batch.status !== "PRINTING") {
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/batches/${batch.id}?error=Batch must be DESIGNED before printing`
-        );
+        return res.redirect(`${process.env.FRONTEND_URL}/batches/${batch.id}?`);
       }
       newStatus = "PRINTED";
     } else {
@@ -91,20 +89,20 @@ async function scanBatch(req, res) {
 async function scanItemCutter(req, res) {
   try {
     const { token } = req.params;
-    const user = req.session.user;
+    const userId = req.session.userId;
+    const role = req.session.role;
 
-    if (!user) {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/login?redirect=/api/scan/item/${token}`
-      );
+    // ✅ Check if user is logged in
+    if (!userId) {
+      return res.redirect(`${process.env.FRONTEND_URL}/login`);
     }
 
-    if (user.role !== "CUTTER") {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/error?message=Only cutters can scan item QR`
-      );
+    // ✅ Role-based access
+    if (role !== "CUTTER") {
+      return res.redirect(`${process.env.FRONTEND_URL}/error`);
     }
 
+    // ✅ Find batch item by token
     const batchItem = await prisma.batchItem.findFirst({
       where: { qrCodeToken: token },
       include: {
@@ -124,21 +122,18 @@ async function scanItemCutter(req, res) {
     });
 
     if (!batchItem) {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/error?message=Invalid item QR`
-      );
+      return res.redirect(`${process.env.FRONTEND_URL}`);
     }
 
+    // ✅ Ensure batch/item is PRINTED before cutting
     if (
       batchItem.status !== "PRINTED" &&
       batchItem.batch.status !== "PRINTED"
     ) {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/error?message=Item must be PRINTED before cutting`
-      );
+      return res.redirect(`${process.env.FRONTEND_URL}/error`);
     }
 
-    // Update this specific item to CUT
+    // ✅ Update item status to CUT in a transaction
     await prisma.$transaction(async (tx) => {
       await tx.batchItem.update({
         where: { id: batchItem.id },
@@ -167,16 +162,15 @@ async function scanItemCutter(req, res) {
       }
     });
 
-    console.log(`✅ Cutter ${user.name} marked item ${batchItem.id} as CUT`);
+    console.log(`✅ Cutter ${userId} marked item ${batchItem.id} as CUT`);
 
+    // ✅ Redirect to frontend batch page
     return res.redirect(
-      `${process.env.FRONTEND_URL}/batches/${batchItem.batchId}?scan=success&itemCut=${batchItem.id}`
+      `${process.env.FRONTEND_URL}/batches/${batchItem.batchId}`
     );
   } catch (err) {
     console.error("Item scan error:", err);
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/error?message=Server error`
-    );
+    return res.redirect(`${process.env.FRONTEND_URL}/error`);
   }
 }
 
