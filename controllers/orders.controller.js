@@ -109,9 +109,7 @@ async function getOrderDetails(req, res) {
         createdAt: true,
         updatedAt: true,
         items: {
-          select: {
-            id: true,
-            productId: true,
+          include: {
             product: {
               select: {
                 id: true,
@@ -121,7 +119,6 @@ async function getOrderDetails(req, res) {
                 isPod: true,
               },
             },
-            variantId: true,
             variant: {
               select: {
                 id: true,
@@ -130,11 +127,23 @@ async function getOrderDetails(req, res) {
                 price: true,
               },
             },
-            quantity: true,
-            price: true,
-            status: true, // OrderItem status
-            createdAt: true,
-            updatedAt: true,
+            BatchItem: {
+              include: {
+                batch: {
+                  select: {
+                    id: true,
+                    name: true,
+                    capacity: true,
+                    maxCapacity: true,
+                    status: true,
+                    createdAt: true,
+                    rules: {
+                      select: { id: true, name: true },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
         store: {
@@ -145,30 +154,49 @@ async function getOrderDetails(req, res) {
 
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // Map order items to include just their own status
-    const itemsWithStatus = order.items.map((item) => ({
-      id: item.id,
-      product: item.product,
-      variant: item.variant,
-      quantity: item.quantity,
-      price: item.price,
-      status: item.status, // <-- OrderItem status here
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-    }));
+    // 🧠 Enhance order items with batch info and naming normalization
+    const enhancedItems = order.items.map((item) => {
+      if (!item.BatchItem?.length) {
+        return {
+          ...item,
+          overallStatus: "WAITING_BATCH",
+          batches: [],
+        };
+      }
+
+      const batchProgress = item.BatchItem.map((bi) => {
+        const batch = bi.batch;
+
+        // 🧩 Normalize batch name for display (same pattern as in helper)
+        let normalizedName = batch.name;
+        if (!batch.name.includes("Batch #")) {
+          // If admin's original name — treat as base for Batch #1
+          normalizedName = `${batch.name} - Batch #1`;
+        }
+
+        return {
+          batchId: batch.id,
+          batchName: normalizedName,
+          quantityAssigned: bi.quantity,
+          status: batch.status,
+          capacity: `${batch.capacity}/${batch.maxCapacity}`,
+          rules: batch.rules.map((r) => r.name),
+          progressNote: getProgressNote(batch.status, batch),
+        };
+      });
+
+      const overallStatus = determineOverallStatus(batchProgress);
+
+      return {
+        ...item,
+        batches: batchProgress,
+        overallStatus,
+      };
+    });
 
     return res.json({
-      id: order.id,
-      shopifyId: order.shopifyId,
-      orderNumber: order.orderNumber,
-      store: order.store,
-      customerName: order.customerName,
-      customerEmail: order.customerEmail,
-      totalPrice: order.totalPrice,
-      status: order.status,
-      createdAt: order.createdAt,
-      updatedAt: order.updatedAt,
-      items: itemsWithStatus,
+      ...order,
+      items: enhancedItems,
     });
   } catch (err) {
     console.error("Error fetching order details:", err);
