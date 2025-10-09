@@ -1,0 +1,213 @@
+generator client {
+  provider = "prisma-client-js"
+  
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+model User {
+  id       Int     @id @default(autoincrement())
+  name     String  @unique
+  password String
+  role     Role
+  storeId  String?  
+  store    Store?   @relation(fields: [storeId], references: [id])
+}
+
+
+enum Role {
+  ADMIN
+  USER
+  DESIGNER
+  PRINTER 
+  CUTTER
+  FULLFILLMENT
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  shopifyId     String
+  storeId       String
+  store         Store       @relation(fields: [storeId], references: [id])
+  orderNumber   Int?
+  customerName  String?
+  customerEmail String?
+  totalPrice    Float?
+  status        Status      @default(PENDING)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  items         OrderItem[]
+
+  @@unique([shopifyId, storeId])
+  @@index([status])
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id])
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  variantId   String?
+  variant     ProductVariant? @relation(fields: [variantId], references: [id])
+  
+  quantity    Int
+  price       Float?
+  status      Status   @default(WAITING_BATCH)
+  
+  BatchItem   BatchItem[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([orderId, productId, variantId])
+  @@index([status])
+}
+
+
+model Store {
+  id          String    @id @default(cuid())
+  shopDomain  String    @unique
+  name        String    @unique
+  accessToken String    // encrypted blob (base64 JSON or single string)
+
+
+  apiSecret   String?   // encrypted secret used to verify webhooks if provided
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  rules   ProductTypeRule[]
+
+  users       User[] 
+  products    Product[]
+  orders      Order[]
+  
+}
+
+model Product {
+  id          String           @id @default(cuid())
+  shopifyId   String
+  storeId     String
+  store       Store            @relation(fields: [storeId], references: [id])
+  title       String
+  productType String?    
+  imgUrl      String?
+  isPod       Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  variants    ProductVariant[] // relation to variants
+  OrderItem   OrderItem[]
+
+  @@unique([shopifyId, storeId])
+  @@index([productType])
+}
+
+model ProductVariant {
+  id                String    @id @default(cuid())
+  shopifyId         String    // Shopify variant ID
+  productId         String
+  product           Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sku               String?
+  
+  title             String?   // variant title (e.g., "Small / Red")
+
+  price             Float?
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  OrderItem         OrderItem[]
+
+  @@unique([shopifyId, productId])
+  @@index([sku])
+  @@index([productId])
+}
+
+model ProductTypeRule {
+  id          String   @id @default(cuid())
+  name        String   @unique   
+  isPod       Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  storeId     String
+
+  store       Store    @relation(fields: [storeId], references: [id])
+
+
+  batches   Batch[] @relation("BatchRules")
+  
+
+}
+
+model Batch {
+  id          String   @id @default(cuid())
+  name        String
+
+  rules       ProductTypeRule[] @relation("BatchRules")
+
+  qrCodeUrl   String?  // URL or base64 of QR image
+  qrCodeToken String?  @unique // unique token to identify via scan
+
+  maxCapacity Int
+  capacity    Int       @default(0)
+  items       BatchItem[]
+  status Status @default(WAITING_BATCH)
+  createdAt   DateTime  @default(now())
+
+  File File[]
+}
+
+
+model BatchItem {
+  id          String    @id @default(cuid())
+  batchId     String
+  batch       Batch     @relation(fields: [batchId], references: [id])
+  orderItemId String
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+  quantity    Int       @default(1)
+
+  status      Status    @default(WAITING_BATCH)  // ADD THIS LINE
+
+
+  qrCodeUrl   String?  
+  qrCodeToken String?   @unique
+}
+
+
+
+model File {
+  id         String   @id @default(cuid())
+  name       String
+  fileId     String
+  mimeType   String
+  size       Int
+  status     Status   @default(PENDING)
+  batch      Batch?   @relation(fields: [batchId], references: [id])
+  batchId    String?
+  createdAt  DateTime @default(now())
+}
+
+
+enum Status {
+  PENDING         
+  WAITING_BATCH   
+  BATCHED 
+  DESIGNING
+  DESIGNED
+  PRINTING
+  PRINTED
+  CUTTING
+  CUT
+  FULFILLMENT
+  PACKED
+  COMPLETED
+  CANCELLED
+}
