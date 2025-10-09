@@ -41,10 +41,7 @@ async function createBatch(req, res) {
     const finalBatchName =
       countForThisName > 0
         ? `${baseName} - Batch #${countForThisName + 1}`
-        : `${baseName} - Batch #1`;git rm --cached services/crm_account_services.json
-echo "services/crm_account_services.json" >> .gitignore
-git add .gitignore
-git commit -m "Remove secret file and ignore it"
+        : `${baseName} - Batch #1`;
 
     // 🚀 Create batch
     const batch = await prisma.batch.create({
