@@ -6,14 +6,15 @@ const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItem
 async function scanBatch(req, res) {
   try {
     const { token } = req.params;
-    const user = req.session.user;
+    const userId = req.session.userId;
+    const role = req.session.role;
 
-    if (!user) {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/login?redirect=/api/scan/batch/${token}`
-      );
+    // ✅ Check if user is logged in
+    if (!userId) {
+      return res.redirect(`${process.env.FRONTEND_URL}`);
     }
 
+    // ✅ Find batch by token
     const batch = await prisma.batch.findFirst({
       where: { qrCodeToken: token },
       include: {
@@ -28,28 +29,24 @@ async function scanBatch(req, res) {
     });
 
     if (!batch) {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/error?message=Invalid batch QR`
-      );
+      return res.redirect(`${process.env.FRONTEND_URL}/error`);
     }
 
     let newStatus;
 
-    // ✅ Printer can only mark DESIGNED batches as PRINTED
-    if (user.role === "PRINTER") {
-      if (batch.status !== "DESIGNED") {
+    // ✅ Role-based status logic
+    if (role === "PRINTER") {
+      if (batch.status !== "PRINTING") {
         return res.redirect(
           `${process.env.FRONTEND_URL}/batches/${batch.id}?error=Batch must be DESIGNED before printing`
         );
       }
-      newStatus = "PRINTED"; // Skip PRINTING, go directly to PRINTED
+      newStatus = "PRINTED";
     } else {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/error?message=Only printers can scan batch QR`
-      );
+      return res.redirect(`${process.env.FRONTEND_URL}/error`);
     }
 
-    // Update batch and cascade to items
+    // ✅ Update batch, items, and order items in a transaction
     await prisma.$transaction(async (tx) => {
       await tx.batch.update({
         where: { id: batch.id },
@@ -78,18 +75,15 @@ async function scanBatch(req, res) {
       }
     });
 
-    console.log(
-      `✅ Printer ${user.name} marked batch ${batch.name} as PRINTED`
-    );
+    console.log(`✅ Printer ${userId} marked batch ${batch.name} as PRINTED`);
 
+    // ✅ Redirect to frontend batch page after success
     return res.redirect(
       `${process.env.FRONTEND_URL}/batches/${batch.id}?scan=success&status=PRINTED`
     );
   } catch (err) {
     console.error("Batch scan error:", err);
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/error?message=Server error`
-    );
+    return res.redirect(`${process.env.FRONTEND_URL}/error`);
   }
 }
 
