@@ -1,5 +1,5 @@
 const { autoUpdateBatchStatus } = require("../controllers/batches.controllers");
-const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems"); // ✅ Add this import
+const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 const prisma = require("../prisma/client");
 
 async function assignOrderItemsToBatches(orderItems) {
@@ -23,7 +23,7 @@ async function assignOrderItemsToBatches(orderItems) {
       continue;
     }
 
-    // 3️⃣ Get the product rule (global)
+    // 3️⃣ Get product rule (global)
     const rule = await prisma.productTypeRule.findFirst({
       where: {
         name: { equals: product.productType, mode: "insensitive" },
@@ -41,7 +41,7 @@ async function assignOrderItemsToBatches(orderItems) {
     let remainingQuantity = item.quantity;
 
     while (remainingQuantity > 0) {
-      // 4️⃣ Find existing batches that include this rule (global)
+      // 4️⃣ Find existing batches for this rule
       const batches = await prisma.batch.findMany({
         where: {
           rules: { some: { id: rule.id } },
@@ -54,20 +54,15 @@ async function assignOrderItemsToBatches(orderItems) {
 
       // 5️⃣ If no suitable batch exists, create a new one
       if (!availableBatch) {
-        // Get the most recent batch for this rule
         const lastBatch = await prisma.batch.findFirst({
-          where: {
-            rules: { some: { id: rule.id } },
-          },
+          where: { rules: { some: { id: rule.id } } },
           orderBy: { createdAt: "desc" },
         });
 
-        // Determine base name (strip suffix if any)
-        let baseName = lastBatch
+        const baseName = lastBatch
           ? lastBatch.name.split(" - Batch #")[0]
           : rule.name;
 
-        // Count existing batches for that base name
         const countForThisName = await prisma.batch.count({
           where: { name: { startsWith: baseName } },
         });
@@ -80,35 +75,46 @@ async function assignOrderItemsToBatches(orderItems) {
         availableBatch = await prisma.batch.create({
           data: {
             name: newBatchName,
-            maxCapacity: lastBatch?.maxCapacity || 10, // ✅ Add default if lastBatch is null
+            maxCapacity: lastBatch?.maxCapacity || 10, // fallback if null
             capacity: 0,
             status: "PENDING",
             rules: { connect: [{ id: rule.id }] },
           },
         });
+
+        console.log(`🆕 Created new batch: ${availableBatch.name}`);
       }
 
-      // 6️⃣ Add item to batch
+      // 6️⃣ Determine how many units to add
       const availableSpace =
         availableBatch.maxCapacity - availableBatch.capacity;
       const quantityToAdd = Math.min(remainingQuantity, availableSpace);
 
-      // ✅ Get orderId before transaction
+      // 7️⃣ Get orderId for later update
       const orderItem = await prisma.orderItem.findUnique({
         where: { id: item.id },
         select: { orderId: true },
       });
 
-      // ✅ Use single transaction with proper status updates
+      // 8️⃣ Transaction: create batch item, units, update capacity + statuses
       await prisma.$transaction(async (tx) => {
-        // Create batch item with status
-        await tx.batchItem.create({
+        // Create BatchItem
+        const createdBatchItem = await tx.batchItem.create({
           data: {
             batchId: availableBatch.id,
             orderItemId: item.id,
             quantity: quantityToAdd,
-            status: "WAITING_BATCH", // ✅ Set initial status
+            status: "WAITING_BATCH",
           },
+        });
+
+        // Create BatchItemUnits for each unit in this item
+        const unitsData = Array.from({ length: quantityToAdd }).map(() => ({
+          batchItemId: createdBatchItem.id,
+          status: "WAITING_BATCH",
+        }));
+        await tx.batchItemUnit.createMany({
+          data: unitsData,
         });
 
         // Update batch capacity
@@ -120,21 +126,21 @@ async function assignOrderItemsToBatches(orderItems) {
         // Update order item status
         await tx.orderItem.update({
           where: { id: item.id },
-          data: { status: "WAITING_BATCH" }, // ✅ Changed from BATCHED to WAITING_BATCH
+          data: { status: "WAITING_BATCH" },
         });
 
-        // ✅ Update parent order status
+        // Update parent order status
         await updateOrderStatusFromItems(orderItem.orderId, tx);
       });
 
       console.log(
-        `✅ Item ${item.id} assigned to ${availableBatch.name} (${quantityToAdd}/${item.quantity})`
+        `✅ Item ${item.id} → ${availableBatch.name} (${quantityToAdd}/${item.quantity})`
       );
 
-      // 7️⃣ Auto-update batch status based on new capacity
-      // This will also cascade to items if batch becomes BATCHED
+      // 9️⃣ Auto-update batch status based on new capacity
       await autoUpdateBatchStatus(availableBatch.id);
 
+      // 🔟 Reduce remaining quantity
       remainingQuantity -= quantityToAdd;
     }
   }

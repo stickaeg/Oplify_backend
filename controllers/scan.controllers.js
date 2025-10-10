@@ -2,6 +2,7 @@
 const prisma = require("../prisma/client");
 const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 
+// 🟩 SCAN BATCH QR (Printer)
 async function scanBatch(req, res) {
   try {
     const { token } = req.params;
@@ -23,24 +24,19 @@ async function scanBatch(req, res) {
       },
     });
 
-    if (!batch) {
-      return res.status(404).json({ error: "Batch not found" });
-    }
-
-    if (role !== "PRINTER") {
+    if (!batch) return res.status(404).json({ error: "Batch not found" });
+    if (role !== "PRINTER")
       return res
         .status(403)
         .json({ error: "Only printers can scan this batch" });
-    }
 
-    // Only allow scanning if batch is in PRINTING status
     if (batch.status !== "PRINTING") {
-      return res
-        .status(400)
-        .json({ error: `Cannot scan batch in status ${batch.status}` });
+      return res.status(400).json({
+        error: `Cannot scan batch in status ${batch.status}`,
+      });
     }
 
-    // Update batch, items, and order items in a transaction
+    // Transaction: mark batch + items + orderItems as PRINTED
     const updatedBatch = await prisma.$transaction(async (tx) => {
       const updatedBatch = await tx.batch.update({
         where: { id: batch.id },
@@ -48,24 +44,25 @@ async function scanBatch(req, res) {
         include: { items: true },
       });
 
-      if (batch.items.length > 0) {
-        await tx.batchItem.updateMany({
-          where: { batchId: batch.id },
-          data: { status: "PRINTED" },
-        });
+      // Update all batch items
+      await tx.batchItem.updateMany({
+        where: { batchId: batch.id },
+        data: { status: "PRINTED" },
+      });
 
-        const orderItemIds = batch.items.map((item) => item.orderItemId);
-        await tx.orderItem.updateMany({
-          where: { id: { in: orderItemIds } },
-          data: { status: "PRINTED" },
-        });
+      // Update related order items
+      const orderItemIds = batch.items.map((i) => i.orderItemId);
+      await tx.orderItem.updateMany({
+        where: { id: { in: orderItemIds } },
+        data: { status: "PRINTED" },
+      });
 
-        const uniqueOrderIds = [
-          ...new Set(batch.items.map((item) => item.orderItem.orderId)),
-        ];
-        for (const orderId of uniqueOrderIds) {
-          await updateOrderStatusFromItems(orderId, tx);
-        }
+      // Update each order's overall status
+      const uniqueOrderIds = [
+        ...new Set(batch.items.map((i) => i.orderItem.orderId)),
+      ];
+      for (const orderId of uniqueOrderIds) {
+        await updateOrderStatusFromItems(orderId, tx);
       }
 
       return updatedBatch;
@@ -73,10 +70,9 @@ async function scanBatch(req, res) {
 
     console.log(`✅ Printer ${userId} marked batch ${batch.name} as PRINTED`);
 
-    // ✅ Return updated batch instead of redirect
     return res.json({
       success: true,
-      message: `Batch marked as PRINTED`,
+      message: "Batch marked as PRINTED",
       batch: updatedBatch,
     });
   } catch (err) {
@@ -85,8 +81,8 @@ async function scanBatch(req, res) {
   }
 }
 
-// 🟨 SCAN ITEM QR (Cutter scans individual stickers to mark as CUT)
-async function scanItemCutter(req, res) {
+// 🟨 SCAN UNIT QR (Cutter scans stickers to mark as CUT)
+async function scanUnitCutter(req, res) {
   try {
     const { token } = req.params;
     const userId = req.session.userId;
@@ -96,24 +92,33 @@ async function scanItemCutter(req, res) {
     if (role !== "CUTTER")
       return res.redirect(`${process.env.FRONTEND_URL}/error`);
 
-    const batchItem = await prisma.batchItem.findFirst({
+    // 🔍 Find unit by token
+    const unit = await prisma.batchItemUnit.findFirst({
       where: { qrCodeToken: token },
       include: {
-        orderItem: {
+        batchItem: {
           include: {
-            order: { select: { id: true, orderNumber: true } },
-            product: { select: { title: true } },
-          },
-        },
-        batch: {
-          include: {
-            items: { select: { id: true, status: true } },
+            orderItem: {
+              include: {
+                order: { select: { id: true, orderNumber: true } },
+                product: { select: { title: true } },
+              },
+            },
+            batch: {
+              include: {
+                items: {
+                  include: { units: true },
+                },
+              },
+            },
           },
         },
       },
     });
 
-    if (!batchItem) return res.redirect(`${process.env.FRONTEND_URL}`);
+    if (!unit) return res.redirect(`${process.env.FRONTEND_URL}`);
+
+    const { batchItem } = unit;
 
     if (
       batchItem.status !== "PRINTED" &&
@@ -122,40 +127,57 @@ async function scanItemCutter(req, res) {
       return res.redirect(`${process.env.FRONTEND_URL}/error`);
     }
 
+    // 🧩 Update inside a transaction
     await prisma.$transaction(async (tx) => {
-      await tx.batchItem.update({
-        where: { id: batchItem.id },
+      // Mark unit as CUT
+      await tx.batchItemUnit.update({
+        where: { id: unit.id },
         data: { status: "CUT" },
       });
 
-      await tx.orderItem.update({
-        where: { id: batchItem.orderItemId },
-        data: { status: "CUT" },
-      });
-
-      await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
-
-      const allItems = batchItem.batch.items;
-      const allCut = allItems.every((item) =>
-        item.id === batchItem.id ? true : item.status === "CUT"
+      // Check if all units of the same batchItem are CUT
+      const allUnits = batchItem.units;
+      const allUnitsCut = allUnits.every(
+        (u) => u.id === unit.id || u.status === "CUT"
       );
 
-      if (allCut) {
+      if (allUnitsCut) {
+        // Mark batchItem and its orderItem as CUT
+        await tx.batchItem.update({
+          where: { id: batchItem.id },
+          data: { status: "CUT" },
+        });
+
+        await tx.orderItem.update({
+          where: { id: batchItem.orderItemId },
+          data: { status: "CUT" },
+        });
+
+        await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
+      }
+
+      // Check if all items in the batch are CUT
+      const allItems = batchItem.batch.items;
+      const allItemsCut = allItems.every((item) =>
+        item.units.every((unit) => unit.status === "CUT")
+      );
+
+      if (allItemsCut) {
         await tx.batch.update({
           where: { id: batchItem.batch.id },
           data: { status: "CUT" },
         });
-        console.log(`✅ All items in batch ${batchItem.batch.name} are CUT`);
+        console.log(`✅ All units in batch ${batchItem.batch.name} are CUT`);
       }
     });
 
-    console.log(`✅ Cutter ${userId} marked item ${batchItem.id} as CUT`);
+    console.log(`✅ Cutter ${userId} marked unit ${unit.id} as CUT`);
 
     return res.redirect(
       `${process.env.FRONTEND_URL}/batches/${batchItem.batchId}`
     );
   } catch (err) {
-    console.error("Item scan error:", err);
+    console.error("Unit scan error:", err);
     return res.redirect(`${process.env.FRONTEND_URL}/error`);
   }
 }
@@ -258,6 +280,6 @@ async function scanItemFulfillment(req, res) {
 
 module.exports = {
   scanBatch,
-  scanItemCutter,
+  scanUnitCutter,
   scanItemFulfillment,
 };

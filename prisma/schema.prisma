@@ -167,21 +167,30 @@ model Batch {
 
 
 model BatchItem {
-  id          String    @id @default(cuid())
+  id          String          @id @default(cuid())
   batchId     String
-  batch       Batch     @relation(fields: [batchId], references: [id])
+  batch       Batch           @relation(fields: [batchId], references: [id])
   orderItemId String
-  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
-  quantity    Int       @default(1)
+  orderItem   OrderItem       @relation(fields: [orderItemId], references: [id])
+  quantity    Int             @default(1)
 
-  status      Status    @default(WAITING_BATCH)  // ADD THIS LINE
+  status      Status          @default(WAITING_BATCH)
 
-
-  qrCodeUrl   String?  
-  qrCodeToken String?   @unique
+  // 🔗 Relation to the new units
+  units       BatchItemUnit[]
 }
 
-
+model BatchItemUnit {
+  id           String      @id @default(cuid())
+  batchItemId  String
+  batchItem    BatchItem   @relation(fields: [batchItemId], references: [id])
+  
+  qrCodeUrl    String?
+  qrCodeToken  String?     @unique
+  
+  status       Status      @default(WAITING_BATCH)
+  
+}
 
 model File {
   id         String   @id @default(cuid())

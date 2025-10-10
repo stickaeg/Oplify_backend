@@ -1,20 +1,34 @@
 const prisma = require("../prisma/client");
 
 async function updateOrderStatusFromItems(orderId, tx = prisma) {
+  // 🧩 Load order and all related item-unit statuses through BatchItem
   const order = await tx.order.findUnique({
     where: { id: orderId },
     include: {
       items: {
-        select: { status: true },
+        include: {
+          BatchItem: {
+            include: {
+              units: {
+                select: { status: true },
+              },
+            },
+          },
+        },
       },
     },
   });
 
   if (!order || !order.items.length) return;
 
-  const allStatuses = order.items.map((item) => item.status);
+  // 🧮 Flatten all statuses from all batch item units
+  const allStatuses = order.items.flatMap((item) =>
+    item.BatchItem.flatMap((bi) => bi.units.map((u) => u.status))
+  );
 
-  // If all items are PACKED, order is COMPLETED
+  if (allStatuses.length === 0) return;
+
+  // ✅ All PACKED → COMPLETED
   if (allStatuses.every((s) => s === "PACKED")) {
     await tx.order.update({
       where: { id: orderId },
@@ -24,20 +38,17 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     return;
   }
 
-  // If any item is CANCELLED, but not all, keep order active
-  if (allStatuses.some((s) => s === "CANCELLED")) {
-    const nonCancelledStatuses = allStatuses.filter((s) => s !== "CANCELLED");
-    if (nonCancelledStatuses.length === 0) {
-      await tx.order.update({
-        where: { id: orderId },
-        data: { status: "CANCELLED" },
-      });
-      console.log(`❌ Order ${orderId} marked as CANCELLED`);
-      return;
-    }
+  // ❌ All CANCELLED → CANCELLED
+  if (allStatuses.every((s) => s === "CANCELLED")) {
+    await tx.order.update({
+      where: { id: orderId },
+      data: { status: "CANCELLED" },
+    });
+    console.log(`❌ Order ${orderId} marked as CANCELLED`);
+    return;
   }
 
-  // Otherwise, use the "earliest" status in the workflow
+  // 🧠 Find earliest active stage based on defined priority
   const statusPriority = [
     "PENDING",
     "WAITING_BATCH",
@@ -56,7 +67,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     if (allStatuses.includes(status)) {
       await tx.order.update({
         where: { id: orderId },
-        data: { status: status },
+        data: { status },
       });
       console.log(`🔄 Order ${orderId} status updated to ${status}`);
       return;

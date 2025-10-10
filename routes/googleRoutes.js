@@ -43,11 +43,10 @@ router.post(
     }
 
     try {
-      // ✅ Use transaction to ensure atomicity
       const result = await prisma.$transaction(async (tx) => {
         const uploadedFiles = [];
 
-        // Upload files to storage and create records
+        // ✅ 1. Upload each file & create DB record
         for (const file of files) {
           const fileId = await uploadDesign(file.path, file.originalname);
 
@@ -57,16 +56,16 @@ router.post(
               fileId,
               mimeType: file.mimetype,
               size: file.size,
-              status: "DESIGNED", // ✅ Changed from PENDING to DESIGNED
+              status: "DESIGNED",
               batchId,
             },
           });
 
           uploadedFiles.push(createdFile);
-          fs.unlinkSync(file.path); // Clean up temp file
+          fs.unlinkSync(file.path); // cleanup temp file
         }
 
-        // ✅ Get batch with all related items
+        // ✅ 2. Fetch the batch with items + order items
         const batch = await tx.batch.findUnique({
           where: { id: batchId },
           include: {
@@ -75,67 +74,74 @@ router.post(
                 orderItem: {
                   select: { id: true, orderId: true },
                 },
+                units: { select: { id: true } }, // include units to update them
               },
             },
           },
         });
 
-        if (!batch) {
-          throw new Error("Batch not found");
-        }
+        if (!batch) throw new Error("Batch not found");
 
-        // ✅ Update batch status to DESIGNED
+        // ✅ 3. Update batch and related entities to DESIGNED
         await tx.batch.update({
           where: { id: batchId },
           data: { status: "DESIGNED" },
         });
 
-        // ✅ Update all batch items to DESIGNED
-        if (batch.items.length > 0) {
-          await tx.batchItem.updateMany({
-            where: { batchId: batchId },
+        // ✅ 4. Update batch items
+        await tx.batchItem.updateMany({
+          where: { batchId },
+          data: { status: "DESIGNED" },
+        });
+
+        // ✅ 5. Update units belonging to this batch
+        const unitIds = batch.items.flatMap((item) =>
+          item.units.map((u) => u.id)
+        );
+
+        if (unitIds.length > 0) {
+          await tx.batchItemUnit.updateMany({
+            where: { id: { in: unitIds } },
             data: { status: "DESIGNED" },
           });
+        }
 
-          // ✅ Update all related order items to DESIGNED
-          const orderItemIds = batch.items.map((item) => item.orderItemId);
+        // ✅ 6. Update related order items
+        const orderItemIds = batch.items.map((item) => item.orderItemId);
+        if (orderItemIds.length > 0) {
           await tx.orderItem.updateMany({
             where: { id: { in: orderItemIds } },
             data: { status: "DESIGNED" },
           });
+        }
 
-          // ✅ Update parent orders
-          const uniqueOrderIds = [
-            ...new Set(batch.items.map((item) => item.orderItem.orderId)),
-          ];
-
-          for (const orderId of uniqueOrderIds) {
-            await updateOrderStatusFromItems(orderId, tx);
-          }
+        // ✅ 7. Update parent orders
+        const uniqueOrderIds = [
+          ...new Set(batch.items.map((item) => item.orderItem.orderId)),
+        ];
+        for (const orderId of uniqueOrderIds) {
+          await updateOrderStatusFromItems(orderId, tx);
         }
 
         console.log(
-          `✅ Batch ${batchId} and ${batch.items.length} items marked as DESIGNED`
+          `✅ Batch ${batchId}, ${batch.items.length} items, and ${unitIds.length} units marked as DESIGNED`
         );
 
-        return { uploadedFiles, batch };
+        return { uploadedFiles, batch, unitCount: unitIds.length };
       });
 
-      // ✅ Generate QR codes AFTER transaction completes
       res.json({
         success: true,
         uploadedFiles: result.uploadedFiles,
-        message: `${result.uploadedFiles.length} files uploaded, batch and ${result.batch.items.length} items updated to DESIGNED`,
+        message: `${result.uploadedFiles.length} files uploaded. Batch, ${result.batch.items.length} items, and ${result.unitCount} units updated to DESIGNED.`,
       });
     } catch (error) {
       console.error("Upload error:", error);
 
-      // Clean up any uploaded files on error
+      // Cleanup temp files on error
       if (files) {
         files.forEach((file) => {
-          if (fs.existsSync(file.path)) {
-            fs.unlinkSync(file.path);
-          }
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
         });
       }
 

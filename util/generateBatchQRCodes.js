@@ -6,12 +6,18 @@ const crypto = require("crypto");
 async function generateBatchQRCodes(batchId) {
   const batch = await prisma.batch.findUnique({
     where: { id: batchId },
-    include: { items: true },
+    include: {
+      items: {
+        include: {
+          units: true, // include the new batchItemUnit records
+        },
+      },
+    },
   });
 
   if (!batch) throw new Error("Batch not found");
 
-  // Generate batch QR (for printer)
+  // 🧾 Generate main batch QR (for printer)
   const batchToken = crypto.randomBytes(16).toString("hex");
   const batchQrUrl = await QRCode.toDataURL(
     `${process.env.HOST}/api/scan/batch/${batchToken}`
@@ -22,29 +28,36 @@ async function generateBatchQRCodes(batchId) {
     data: { qrCodeToken: batchToken, qrCodeUrl: batchQrUrl },
   });
 
-  // Generate item QRs (for cutter and fulfillment)
-  const itemQRs = [];
+  // 🧩 Generate unit QRs (for cutting & fulfillment)
+  const unitQRs = [];
+
   for (const item of batch.items) {
-    const token = crypto.randomBytes(16).toString("hex");
+    for (const unit of item.units) {
+      const token = crypto.randomBytes(16).toString("hex");
 
-    // For cutter (cutting phase)
-    const qrUrl = await QRCode.toDataURL(
-      `${process.env.HOST}/api/scan/item/${token}`
-    );
+      const qrUrl = await QRCode.toDataURL(
+        `${process.env.HOST}/api/scan/unit/${token}`
+      );
 
-    await prisma.batchItem.update({
-      where: { id: item.id },
-      data: { qrCodeToken: token, qrCodeUrl: qrUrl },
-    });
+      await prisma.batchItemUnit.update({
+        where: { id: unit.id },
+        data: { qrCodeToken: token, qrCodeUrl: qrUrl },
+      });
 
-    itemQRs.push({ itemId: item.id, qrUrl, token });
+      unitQRs.push({
+        unitId: unit.id,
+        itemId: item.id,
+        qrUrl,
+        token,
+      });
+    }
   }
 
   return {
     batchQrUrl,
     batchToken,
-    itemQRs,
-    itemCount: batch.items.length,
+    unitQRs,
+    unitCount: unitQRs.length,
   };
 }
 

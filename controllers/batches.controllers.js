@@ -6,7 +6,6 @@ async function createBatch(req, res) {
   try {
     const { ruleIds, maxCapacity, batchName } = req.body;
 
-    // 🧩 Validate input
     if (
       !ruleIds ||
       !Array.isArray(ruleIds) ||
@@ -20,7 +19,6 @@ async function createBatch(req, res) {
       });
     }
 
-    // 🕵️ Fetch all matching rules
     const rules = await prisma.productTypeRule.findMany({
       where: { id: { in: ruleIds } },
     });
@@ -32,19 +30,15 @@ async function createBatch(req, res) {
     }
 
     const baseName = batchName.trim();
-
-    // Count how many existing batches already share this name pattern
     const countForThisName = await prisma.batch.count({
       where: { name: { startsWith: baseName } },
     });
 
-    // Add suffix if duplicates exist
     const finalBatchName =
       countForThisName > 0
         ? `${baseName} - Batch #${countForThisName + 1}`
         : `${baseName} - Batch #1`;
 
-    // 🚀 Create batch
     const batch = await prisma.batch.create({
       data: {
         name: finalBatchName,
@@ -72,15 +66,13 @@ async function listBatches(req, res) {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    // total count
     const total = await prisma.batch.count();
 
-    // fetch paginated batches with their related data
     const batches = await prisma.batch.findMany({
       skip,
       take: limit,
       include: {
-        rules: true, // ✅ include all linked rules
+        rules: true,
         items: {
           include: {
             orderItem: {
@@ -90,13 +82,13 @@ async function listBatches(req, res) {
                 variant: true,
               },
             },
+            units: true, // ✅ now include units directly, no nested orderItem here
           },
         },
       },
       orderBy: { createdAt: "desc" },
     });
 
-    // format response
     const formatted = batches.map((batch) => ({
       id: batch.id,
       name: batch.name,
@@ -105,20 +97,26 @@ async function listBatches(req, res) {
       status: batch.status,
       createdAt: batch.createdAt,
 
-      // ✅ multiple rules now
       rules: batch.rules.map((r) => ({
         id: r.id,
         name: r.name,
-        storeName: r.storeId, // you can also join Store if you want store name
+        storeId: r.storeId,
         isPod: r.isPod,
       })),
 
       items: batch.items.map((bi) => ({
-        sku: bi.orderItem.variant?.sku || null,
+        id: bi.id,
+        totalUnits: bi.units.length,
         orderNumber: bi.orderItem.order.orderNumber,
-        title: bi.orderItem.product.title,
+        productTitle: bi.orderItem.product.title,
         storeName: bi.orderItem.order.store.name,
-        quantityInBatch: bi.quantity,
+        sku: bi.orderItem.variant?.sku || null,
+        status: bi.status,
+        units: bi.units.map((u) => ({
+          id: u.id,
+          qrCodeUrl: u.qrCodeUrl,
+          status: u.status,
+        })),
       })),
     }));
 
@@ -138,10 +136,8 @@ async function listBatches(req, res) {
 async function getBatchById(req, res) {
   try {
     const { batchId } = req.params;
-
-    if (!batchId) {
+    if (!batchId)
       return res.status(400).json({ error: "Batch ID is required" });
-    }
 
     const batch = await prisma.batch.findUnique({
       where: { id: batchId },
@@ -156,17 +152,15 @@ async function getBatchById(req, res) {
                 variant: true,
               },
             },
+            units: true, // ✅ no nested include needed here
           },
         },
         File: true,
       },
     });
 
-    if (!batch) {
-      return res.status(404).json({ error: "Batch not found" });
-    }
+    if (!batch) return res.status(404).json({ error: "Batch not found" });
 
-    // ✅ Include QR code URLs
     const formatted = {
       id: batch.id,
       name: batch.name,
@@ -175,7 +169,7 @@ async function getBatchById(req, res) {
       status: batch.status,
       createdAt: batch.createdAt,
       updatedAt: batch.updatedAt,
-      qrCodeUrl: batch.qrCodeUrl, // ✅ batch QR
+      qrCodeUrl: batch.qrCodeUrl,
 
       rules: batch.rules.map((r) => ({
         id: r.id,
@@ -186,12 +180,17 @@ async function getBatchById(req, res) {
 
       items: batch.items.map((bi) => ({
         id: bi.id,
-        quantityInBatch: bi.quantity,
-        orderNumber: bi.orderItem.order.orderNumber,
-        qrCodeUrl: bi.qrCodeUrl, // ✅ item QR
-        productTitle: bi.orderItem.product.title,
-        storeName: bi.orderItem.order.store.name,
-        sku: bi.orderItem.variant?.sku || null,
+        totalUnits: bi.units.length,
+        units: bi.units.map((u) => ({
+          id: u.id,
+          status: u.status,
+          qrCodeUrl: u.qrCodeUrl,
+          // 🧩 Access order info through the parent batch item’s orderItem
+          orderNumber: bi.orderItem?.order?.orderNumber ?? null,
+          productTitle: bi.orderItem?.product?.title ?? null,
+          storeName: bi.orderItem?.order?.store?.name ?? null,
+          sku: bi.orderItem?.variant?.sku ?? null,
+        })),
       })),
 
       files: batch.File.map((f) => ({
@@ -223,11 +222,11 @@ async function updateBatchStatus(req, res) {
       "DESIGNING",
       "DESIGNED",
       "PRINTING",
-      "PRINTED", // ✅ ADD THIS
+      "PRINTED",
       "CUTTING",
-      "CUT", // ✅ ADD THIS
+      "CUT",
       "FULFILLMENT",
-      "PACKED", // ✅ ADD THIS
+      "PACKED",
       "COMPLETED",
       "CANCELLED",
     ];
@@ -236,17 +235,21 @@ async function updateBatchStatus(req, res) {
       return res.status(400).json({ message: "Invalid batch status" });
     }
 
-    // ✅ Use transaction to update batch and all related items atomically
     const batch = await prisma.$transaction(async (tx) => {
-      // Update the batch
+      // ✅ Update batch status
       const updatedBatch = await tx.batch.update({
         where: { id: batchId },
-        data: { status: status },
+        data: { status },
         include: {
           items: {
             include: {
+              units: true,
               orderItem: {
-                select: { id: true, orderId: true },
+                include: {
+                  order: { include: { store: true } },
+                  product: true,
+                  variant: true,
+                },
               },
             },
           },
@@ -254,22 +257,39 @@ async function updateBatchStatus(req, res) {
       });
 
       // ✅ Update all batch items
-      if (updatedBatch.items.length > 0) {
-        await tx.batchItem.updateMany({
-          where: { batchId: batchId },
-          data: { status: status },
-        });
+      await tx.batchItem.updateMany({
+        where: { batchId },
+        data: { status },
+      });
 
-        // ✅ Update all related order items
-        const orderItemIds = updatedBatch.items.map((item) => item.orderItemId);
+      // ✅ Fix: get all BatchItem IDs and update their units
+      const itemIds = updatedBatch.items.map((i) => i.id);
+
+      if (itemIds.length > 0) {
+        await tx.batchItemUnit.updateMany({
+          where: { batchItemId: { in: itemIds } },
+          data: { status },
+        });
+      }
+
+      // ✅ Update all linked order items
+      const orderItemIds = updatedBatch.items
+        .map((item) => item.orderItemId)
+        .filter(Boolean);
+
+      if (orderItemIds.length > 0) {
         await tx.orderItem.updateMany({
           where: { id: { in: orderItemIds } },
-          data: { status: status },
+          data: { status },
         });
 
-        // ✅ Update parent orders if necessary
+        // ✅ Update parent orders
         const uniqueOrderIds = [
-          ...new Set(updatedBatch.items.map((item) => item.orderItem.orderId)),
+          ...new Set(
+            updatedBatch.items
+              .map((item) => item.orderItem?.orderId)
+              .filter(Boolean)
+          ),
         ];
 
         for (const orderId of uniqueOrderIds) {
@@ -281,12 +301,11 @@ async function updateBatchStatus(req, res) {
     });
 
     console.log(
-      `✅ Batch ${batchId} and all related items updated to status: ${status}`
+      `✅ Batch ${batchId} and all related records updated to ${status}`
     );
-
     res.json(batch);
   } catch (err) {
-    console.error("Error updating batch status:", err);
+    console.error("❌ Error updating batch status:", err);
     res.status(500).json({
       message: "Failed to update batch status",
       error: err.message,
@@ -300,7 +319,12 @@ async function autoUpdateBatchStatus(batchId) {
       where: { id: batchId },
       include: {
         items: {
-          include: { orderItem: { select: { id: true, orderId: true } } },
+          include: {
+            orderItem: {
+              select: { id: true, orderId: true },
+            },
+            units: true,
+          },
         },
         File: { select: { id: true } },
       },
@@ -308,26 +332,16 @@ async function autoUpdateBatchStatus(batchId) {
 
     if (!batch) return null;
 
-    const autoUpdateableStatuses = [
-      "PENDING",
-      "WAITING_BATCH",
-      "BATCHED",
-      "DESIGNING",
-    ];
-    if (!autoUpdateableStatuses.includes(batch.status)) return batch;
+    const autoStatuses = ["PENDING", "WAITING_BATCH", "BATCHED", "DESIGNING"];
+    if (!autoStatuses.includes(batch.status)) return batch;
 
     let newStatus = batch.status;
 
-    // Determine new status
-    if (batch.File && batch.File.length > 0) {
-      newStatus = "DESIGNED";
-    } else if (batch.capacity === 0) {
-      newStatus = "PENDING";
-    } else if (batch.capacity < batch.maxCapacity) {
-      newStatus = "WAITING_BATCH";
-    } else if (batch.capacity >= batch.maxCapacity) {
-      newStatus = "BATCHED";
-    }
+    // ✅ Determine new status
+    if (batch.File.length > 0) newStatus = "DESIGNED";
+    else if (batch.capacity === 0) newStatus = "PENDING";
+    else if (batch.capacity < batch.maxCapacity) newStatus = "WAITING_BATCH";
+    else if (batch.capacity >= batch.maxCapacity) newStatus = "BATCHED";
 
     if (newStatus !== batch.status) {
       const updatedBatch = await prisma.$transaction(async (tx) => {
@@ -336,25 +350,28 @@ async function autoUpdateBatchStatus(batchId) {
           data: { status: newStatus },
         });
 
-        if (batch.items.length > 0) {
-          await tx.batchItem.updateMany({
-            where: { batchId: batchId },
-            data: { status: newStatus },
-          });
+        await tx.batchItem.updateMany({
+          where: { batchId },
+          data: { status: newStatus },
+        });
 
-          const orderItemIds = batch.items.map((item) => item.orderItemId);
-          await tx.orderItem.updateMany({
-            where: { id: { in: orderItemIds } },
-            data: { status: newStatus },
-          });
+        await tx.batchItemUnit.updateMany({
+          where: { batchItem: { batchId } },
+          data: { status: newStatus },
+        });
 
-          const uniqueOrderIds = [
-            ...new Set(batch.items.map((item) => item.orderItem.orderId)),
-          ];
+        const orderItemIds = batch.items.map((i) => i.orderItem.id);
+        await tx.orderItem.updateMany({
+          where: { id: { in: orderItemIds } },
+          data: { status: newStatus },
+        });
 
-          for (const orderId of uniqueOrderIds) {
-            await updateOrderStatusFromItems(orderId, tx);
-          }
+        const uniqueOrderIds = [
+          ...new Set(batch.items.map((i) => i.orderItem.orderId)),
+        ];
+
+        for (const orderId of uniqueOrderIds) {
+          await updateOrderStatusFromItems(orderId, tx);
         }
 
         return updated;
@@ -364,15 +381,12 @@ async function autoUpdateBatchStatus(batchId) {
         `🔄 Batch ${batchId} auto-updated: ${batch.status} → ${newStatus}`
       );
 
-      // ✅ Generate QR code only when batch is BATCHED
       if (newStatus === "BATCHED" && !batch.qrCodeUrl) {
         const qrUrl = await generateBatchQRCodes(batchId);
-
         await prisma.batch.update({
           where: { id: batchId },
           data: { qrCodeUrl: qrUrl },
         });
-
         console.log(`✅ QR code generated for batch ${batchId}`);
       }
 
