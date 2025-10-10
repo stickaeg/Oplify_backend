@@ -167,7 +167,6 @@ async function scanUnitCutter(req, res) {
 
       // ✂️ CUTTER logic
       if (role === "CUTTER") {
-        // Fetch the latest status from the database within the transaction
         const freshUnit = await tx.batchItemUnit.findUnique({
           where: { id: unit.id },
           select: { status: true },
@@ -177,18 +176,21 @@ async function scanUnitCutter(req, res) {
           throw new Error("Unit must be PRINTED before cutting");
         }
 
-        // Proceed with cutting update
         await tx.batchItemUnit.update({
           where: { id: unit.id },
           data: { status: "CUT" },
         });
         updatedStatus = "CUT";
 
-        const allUnitsCut = batchItem.units.every(
-          (u) => u.id === unit.id || u.status === "CUT"
-        );
+        // Count remaining non-CUT units for this batch item
+        const remainingUnits = await tx.batchItemUnit.count({
+          where: {
+            batchItemId: batchItem.id,
+            status: { not: "CUT" },
+          },
+        });
 
-        if (allUnitsCut) {
+        if (remainingUnits === 0) {
           await tx.batchItem.update({
             where: { id: batchItem.id },
             data: { status: "CUT" },
@@ -202,13 +204,17 @@ async function scanUnitCutter(req, res) {
           await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
         }
 
-        const allItemsCut = batchItem.batch.items.every((item) =>
-          item.units.every((unit) => unit.status === "CUT")
-        );
+        // Count remaining non-CUT units across all items in batch
+        const remainingBatchUnits = await tx.batchItemUnit.count({
+          where: {
+            batchItem: { batchId: batchItem.batchId },
+            status: { not: "CUT" },
+          },
+        });
 
-        if (allItemsCut) {
+        if (remainingBatchUnits === 0) {
           await tx.batch.update({
-            where: { id: batchItem.batch.id },
+            where: { id: batchItem.batchId },
             data: { status: "CUT" },
           });
         }
