@@ -2,86 +2,86 @@
 const prisma = require("../prisma/client");
 const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 
-// 🟩 SCAN BATCH QR (Printer scans to mark as PRINTED)
 async function scanBatch(req, res) {
   try {
     const { token } = req.params;
     const userId = req.session.userId;
     const role = req.session.role;
 
-    // ✅ Check if user is logged in
     if (!userId) {
-      return res.redirect(`${process.env.FRONTEND_URL}`);
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-    // ✅ Find batch by token
     const batch = await prisma.batch.findFirst({
       where: { qrCodeToken: token },
       include: {
         items: {
           include: {
-            orderItem: {
-              select: { id: true, orderId: true },
-            },
+            orderItem: { select: { id: true, orderId: true } },
           },
         },
       },
     });
 
     if (!batch) {
-      return res.redirect(`${process.env.FRONTEND_URL}/error`);
+      return res.status(404).json({ error: "Batch not found" });
     }
 
-    let newStatus;
-
-    // ✅ Role-based status logic
-    if (role === "PRINTER") {
-      if (batch.status !== "PRINTING") {
-        return res.redirect(`${process.env.FRONTEND_URL}/batches/${batch.id}?`);
-      }
-      newStatus = "PRINTED";
-    } else {
-      return res.redirect(`${process.env.FRONTEND_URL}/error`);
+    if (role !== "PRINTER") {
+      return res
+        .status(403)
+        .json({ error: "Only printers can scan this batch" });
     }
 
-    // ✅ Update batch, items, and order items in a transaction
-    await prisma.$transaction(async (tx) => {
-      await tx.batch.update({
+    // Only allow scanning if batch is in PRINTING status
+    if (batch.status !== "PRINTING") {
+      return res
+        .status(400)
+        .json({ error: `Cannot scan batch in status ${batch.status}` });
+    }
+
+    // Update batch, items, and order items in a transaction
+    const updatedBatch = await prisma.$transaction(async (tx) => {
+      const updatedBatch = await tx.batch.update({
         where: { id: batch.id },
-        data: { status: newStatus },
+        data: { status: "PRINTED" },
+        include: { items: true },
       });
 
       if (batch.items.length > 0) {
         await tx.batchItem.updateMany({
           where: { batchId: batch.id },
-          data: { status: newStatus },
+          data: { status: "PRINTED" },
         });
 
         const orderItemIds = batch.items.map((item) => item.orderItemId);
         await tx.orderItem.updateMany({
           where: { id: { in: orderItemIds } },
-          data: { status: newStatus },
+          data: { status: "PRINTED" },
         });
 
         const uniqueOrderIds = [
           ...new Set(batch.items.map((item) => item.orderItem.orderId)),
         ];
-
         for (const orderId of uniqueOrderIds) {
           await updateOrderStatusFromItems(orderId, tx);
         }
       }
+
+      return updatedBatch;
     });
 
     console.log(`✅ Printer ${userId} marked batch ${batch.name} as PRINTED`);
 
-    // ✅ Redirect to frontend batch page after success
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/batches/${batch.id}?scan=success&status=PRINTED`
-    );
+    // ✅ Return updated batch instead of redirect
+    return res.json({
+      success: true,
+      message: `Batch marked as PRINTED`,
+      batch: updatedBatch,
+    });
   } catch (err) {
     console.error("Batch scan error:", err);
-    return res.redirect(`${process.env.FRONTEND_URL}/error`);
+    return res.status(500).json({ error: "Internal server error" });
   }
 }
 

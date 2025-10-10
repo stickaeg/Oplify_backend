@@ -13,8 +13,6 @@ const prisma = require("../prisma/client");
 
 const { requireRole } = require("../middleware/AuthMiddlewares");
 
-const generateBatchQRCodes = require("../util/generateBatchQRCodes");
-
 const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 
 // List files
@@ -124,12 +122,9 @@ router.post(
       });
 
       // ✅ Generate QR codes AFTER transaction completes
-      const qrResult = await generateBatchQRCodes(batchId);
-
       res.json({
         success: true,
         uploadedFiles: result.uploadedFiles,
-        qrInfo: qrResult,
         message: `${result.uploadedFiles.length} files uploaded, batch and ${result.batch.items.length} items updated to DESIGNED`,
       });
     } catch (error) {

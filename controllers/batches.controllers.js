@@ -1,5 +1,6 @@
 const prisma = require("../prisma/client");
 const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
+const generateBatchQRCodes = require("../util/generateBatchQRCodes");
 
 async function createBatch(req, res) {
   try {
@@ -299,11 +300,7 @@ async function autoUpdateBatchStatus(batchId) {
       where: { id: batchId },
       include: {
         items: {
-          include: {
-            orderItem: {
-              select: { id: true, orderId: true },
-            },
-          },
+          include: { orderItem: { select: { id: true, orderId: true } } },
         },
         File: { select: { id: true } },
       },
@@ -317,17 +314,14 @@ async function autoUpdateBatchStatus(batchId) {
       "BATCHED",
       "DESIGNING",
     ];
-
     if (!autoUpdateableStatuses.includes(batch.status)) return batch;
 
     let newStatus = batch.status;
 
-    // ✅ Priority 1: If files exist, status should be DESIGNED
+    // Determine new status
     if (batch.File && batch.File.length > 0) {
       newStatus = "DESIGNED";
-    }
-    // ✅ Priority 2: Check capacity-based statuses only if no files
-    else if (batch.capacity === 0) {
+    } else if (batch.capacity === 0) {
       newStatus = "PENDING";
     } else if (batch.capacity < batch.maxCapacity) {
       newStatus = "WAITING_BATCH";
@@ -335,31 +329,25 @@ async function autoUpdateBatchStatus(batchId) {
       newStatus = "BATCHED";
     }
 
-    // Only update if status changed
     if (newStatus !== batch.status) {
-      // ✅ Use transaction to cascade status updates
       const updatedBatch = await prisma.$transaction(async (tx) => {
-        // Update batch
         const updated = await tx.batch.update({
           where: { id: batchId },
           data: { status: newStatus },
         });
 
-        // ✅ Update all batch items
         if (batch.items.length > 0) {
           await tx.batchItem.updateMany({
             where: { batchId: batchId },
             data: { status: newStatus },
           });
 
-          // ✅ Update all related order items
           const orderItemIds = batch.items.map((item) => item.orderItemId);
           await tx.orderItem.updateMany({
             where: { id: { in: orderItemIds } },
             data: { status: newStatus },
           });
 
-          // ✅ Update parent orders
           const uniqueOrderIds = [
             ...new Set(batch.items.map((item) => item.orderItem.orderId)),
           ];
@@ -373,8 +361,20 @@ async function autoUpdateBatchStatus(batchId) {
       });
 
       console.log(
-        `🔄 Batch ${batchId} and all items auto-updated: ${batch.status} → ${newStatus}`
+        `🔄 Batch ${batchId} auto-updated: ${batch.status} → ${newStatus}`
       );
+
+      // ✅ Generate QR code only when batch is BATCHED
+      if (newStatus === "BATCHED" && !batch.qrCodeUrl) {
+        const qrUrl = await generateBatchQRCodes(batchId);
+
+        await prisma.batch.update({
+          where: { id: batchId },
+          data: { qrCodeUrl: qrUrl },
+        });
+
+        console.log(`✅ QR code generated for batch ${batchId}`);
+      }
 
       return updatedBatch;
     }
