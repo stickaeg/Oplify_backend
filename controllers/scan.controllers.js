@@ -88,9 +88,11 @@ async function scanUnitCutter(req, res) {
     const userId = req.session.userId;
     const role = req.session.role;
 
-    if (!userId) return res.redirect(`${process.env.FRONTEND_URL}/login`);
+    if (!userId)
+      return res.status(401).json({ error: "Unauthorized: Please log in" });
+
     if (!["CUTTER", "PRINTER"].includes(role))
-      return res.redirect(`${process.env.FRONTEND_URL}/error`);
+      return res.status(403).json({ error: "Access denied" });
 
     // 🔍 Find the unit by QR token
     const unit = await prisma.batchItemUnit.findFirst({
@@ -106,33 +108,30 @@ async function scanUnitCutter(req, res) {
               },
             },
             batch: {
-              include: {
-                items: {
-                  include: { units: true },
-                },
-              },
+              include: { items: { include: { units: true } } },
             },
           },
         },
       },
     });
 
-    if (!unit) return res.redirect(`${process.env.FRONTEND_URL}`);
+    if (!unit) return res.status(404).json({ error: "Unit not found" });
 
     const { batchItem } = unit;
+    let updatedStatus = null;
 
-    // 🧩 Transaction to handle atomic updates
     await prisma.$transaction(async (tx) => {
+      // 🖨️ PRINTER logic
       if (role === "PRINTER") {
-        // 🖨️ PRINTER logic: mark unit as PRINTED
         if (unit.status !== "PRINTING") {
-          return res.redirect(`${process.env.FRONTEND_URL}/error`);
+          throw new Error("Unit is not ready for printing");
         }
 
         await tx.batchItemUnit.update({
           where: { id: unit.id },
           data: { status: "PRINTED" },
         });
+        updatedStatus = "PRINTED";
 
         const allUnitsPrinted = batchItem.units.every(
           (u) => u.id === unit.id || u.status === "PRINTED"
@@ -152,7 +151,6 @@ async function scanUnitCutter(req, res) {
           await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
         }
 
-        // ✅ If all items in batch are PRINTED, update batch
         const allItemsPrinted = batchItem.batch.items.every((item) =>
           item.units.every((unit) => unit.status === "PRINTED")
         );
@@ -167,19 +165,24 @@ async function scanUnitCutter(req, res) {
         console.log(`🖨️ Printer ${userId} marked unit ${unit.id} as PRINTED`);
       }
 
+      // ✂️ CUTTER logic
       if (role === "CUTTER") {
-        // ✂️ CUTTER logic: only proceed if item/batch already PRINTED
-        if (
-          batchItem.status !== "PRINTED" &&
-          batchItem.batch.status !== "PRINTED"
-        ) {
-          return res.redirect(`${process.env.FRONTEND_URL}/error`);
+        // Fetch the latest status from the database within the transaction
+        const freshUnit = await tx.batchItemUnit.findUnique({
+          where: { id: unit.id },
+          select: { status: true },
+        });
+
+        if (freshUnit.status !== "PRINTED") {
+          throw new Error("Unit must be PRINTED before cutting");
         }
 
+        // Proceed with cutting update
         await tx.batchItemUnit.update({
           where: { id: unit.id },
           data: { status: "CUT" },
         });
+        updatedStatus = "CUT";
 
         const allUnitsCut = batchItem.units.every(
           (u) => u.id === unit.id || u.status === "CUT"
@@ -199,7 +202,6 @@ async function scanUnitCutter(req, res) {
           await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
         }
 
-        // ✅ If all items in batch are CUT, update batch
         const allItemsCut = batchItem.batch.items.every((item) =>
           item.units.every((unit) => unit.status === "CUT")
         );
@@ -209,20 +211,23 @@ async function scanUnitCutter(req, res) {
             where: { id: batchItem.batch.id },
             data: { status: "CUT" },
           });
-          console.log(`✅ All units in batch ${batchItem.batch.name} are CUT`);
         }
 
         console.log(`✂️ Cutter ${userId} marked unit ${unit.id} as CUT`);
       }
     });
 
-    // ✅ Redirect back to batch details
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/batches/${batchItem.batchId}`
-    );
+    return res.status(200).json({
+      success: true,
+      message: `${role} marked unit as ${updatedStatus}`,
+      unitId: unit.id,
+      newStatus: updatedStatus,
+      batchItemId: batchItem.id,
+      batchId: batchItem.batchId,
+    });
   } catch (err) {
-    console.error("Unit scan error:", err);
-    return res.redirect(`${process.env.FRONTEND_URL}/error`);
+    console.error("❌ Unit scan error:", err);
+    return res.status(400).json({ success: false, error: err.message });
   }
 }
 
