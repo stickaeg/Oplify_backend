@@ -89,15 +89,16 @@ async function scanUnitCutter(req, res) {
     const role = req.session.role;
 
     if (!userId) return res.redirect(`${process.env.FRONTEND_URL}/login`);
-    if (role !== "CUTTER")
+    if (!["CUTTER", "PRINTER"].includes(role))
       return res.redirect(`${process.env.FRONTEND_URL}/error`);
 
-    // 🔍 Find unit by token
+    // 🔍 Find the unit by QR token
     const unit = await prisma.batchItemUnit.findFirst({
       where: { qrCodeToken: token },
       include: {
         batchItem: {
           include: {
+            units: true,
             orderItem: {
               include: {
                 order: { select: { id: true, orderNumber: true } },
@@ -120,59 +121,102 @@ async function scanUnitCutter(req, res) {
 
     const { batchItem } = unit;
 
-    if (
-      batchItem.status !== "PRINTED" &&
-      batchItem.batch.status !== "PRINTED"
-    ) {
-      return res.redirect(`${process.env.FRONTEND_URL}/error`);
-    }
-
-    // 🧩 Update inside a transaction
+    // 🧩 Transaction to handle atomic updates
     await prisma.$transaction(async (tx) => {
-      // Mark unit as CUT
-      await tx.batchItemUnit.update({
-        where: { id: unit.id },
-        data: { status: "CUT" },
-      });
+      if (role === "PRINTER") {
+        // 🖨️ PRINTER logic: mark unit as PRINTED
+        if (unit.status !== "PRINTING") {
+          return res.redirect(`${process.env.FRONTEND_URL}/error`);
+        }
 
-      // Check if all units of the same batchItem are CUT
-      const allUnits = batchItem.units;
-      const allUnitsCut = allUnits.every(
-        (u) => u.id === unit.id || u.status === "CUT"
-      );
-
-      if (allUnitsCut) {
-        // Mark batchItem and its orderItem as CUT
-        await tx.batchItem.update({
-          where: { id: batchItem.id },
-          data: { status: "CUT" },
+        await tx.batchItemUnit.update({
+          where: { id: unit.id },
+          data: { status: "PRINTED" },
         });
 
-        await tx.orderItem.update({
-          where: { id: batchItem.orderItemId },
-          data: { status: "CUT" },
-        });
+        const allUnitsPrinted = batchItem.units.every(
+          (u) => u.id === unit.id || u.status === "PRINTED"
+        );
 
-        await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
+        if (allUnitsPrinted) {
+          await tx.batchItem.update({
+            where: { id: batchItem.id },
+            data: { status: "PRINTED" },
+          });
+
+          await tx.orderItem.update({
+            where: { id: batchItem.orderItemId },
+            data: { status: "PRINTED" },
+          });
+
+          await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
+        }
+
+        // ✅ If all items in batch are PRINTED, update batch
+        const allItemsPrinted = batchItem.batch.items.every((item) =>
+          item.units.every((unit) => unit.status === "PRINTED")
+        );
+
+        if (allItemsPrinted) {
+          await tx.batch.update({
+            where: { id: batchItem.batch.id },
+            data: { status: "PRINTED" },
+          });
+        }
+
+        console.log(`🖨️ Printer ${userId} marked unit ${unit.id} as PRINTED`);
       }
 
-      // Check if all items in the batch are CUT
-      const allItems = batchItem.batch.items;
-      const allItemsCut = allItems.every((item) =>
-        item.units.every((unit) => unit.status === "CUT")
-      );
+      if (role === "CUTTER") {
+        // ✂️ CUTTER logic: only proceed if item/batch already PRINTED
+        if (
+          batchItem.status !== "PRINTED" &&
+          batchItem.batch.status !== "PRINTED"
+        ) {
+          return res.redirect(`${process.env.FRONTEND_URL}/error`);
+        }
 
-      if (allItemsCut) {
-        await tx.batch.update({
-          where: { id: batchItem.batch.id },
+        await tx.batchItemUnit.update({
+          where: { id: unit.id },
           data: { status: "CUT" },
         });
-        console.log(`✅ All units in batch ${batchItem.batch.name} are CUT`);
+
+        const allUnitsCut = batchItem.units.every(
+          (u) => u.id === unit.id || u.status === "CUT"
+        );
+
+        if (allUnitsCut) {
+          await tx.batchItem.update({
+            where: { id: batchItem.id },
+            data: { status: "CUT" },
+          });
+
+          await tx.orderItem.update({
+            where: { id: batchItem.orderItemId },
+            data: { status: "CUT" },
+          });
+
+          await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
+        }
+
+        // ✅ If all items in batch are CUT, update batch
+        const allItemsCut = batchItem.batch.items.every((item) =>
+          item.units.every((unit) => unit.status === "CUT")
+        );
+
+        if (allItemsCut) {
+          await tx.batch.update({
+            where: { id: batchItem.batch.id },
+            data: { status: "CUT" },
+          });
+          console.log(`✅ All units in batch ${batchItem.batch.name} are CUT`);
+        }
+
+        console.log(`✂️ Cutter ${userId} marked unit ${unit.id} as CUT`);
       }
     });
 
-    console.log(`✅ Cutter ${userId} marked unit ${unit.id} as CUT`);
-
+    // ✅ Redirect back to batch details
     return res.redirect(
       `${process.env.FRONTEND_URL}/batches/${batchItem.batchId}`
     );
