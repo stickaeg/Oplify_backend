@@ -238,6 +238,7 @@ async function scanUnitCutter(req, res) {
 }
 
 // 🟦 SCAN ITEM QR (Fulfillment scans to mark as PACKED)
+
 async function scanItemFulfillment(req, res) {
   try {
     const { token } = req.params;
@@ -245,13 +246,13 @@ async function scanItemFulfillment(req, res) {
 
     if (!user) {
       return res.redirect(
-        `${process.env.FRONTEND_URL}/login?redirect=/api/scan/item-fulfillment/${token}`
+        `${process.env.FRONTEND_URL}/`
       );
     }
 
     if (user.role !== "FULFILLMENT") {
       return res.redirect(
-        `${process.env.FRONTEND_URL}/error?message=Only fulfillment can scan for packing`
+        `${process.env.FRONTEND_URL}/`
       );
     }
 
