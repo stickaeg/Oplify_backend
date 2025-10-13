@@ -137,11 +137,12 @@ async function scanBatch(req, res) {
 async function scanUnitFulfillment(req, res) {
   try {
     const { token } = req.params;
-    const user = req.session.user;
+    const userId = req.session.userId;
+    const role = req.session.role;
 
-    if (!user)
+    if (!userId)
       return res.status(401).json({ error: "Unauthorized: Please log in" });
-    if (user.role !== "FULFILLMENT")
+    if (role !== "FULLFILLMENT")
       return res.status(403).json({ error: "Access denied: FULFILLMENT only" });
 
     // 🔍 Find the batch unit by QR token
