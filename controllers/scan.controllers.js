@@ -9,9 +9,9 @@ async function scanBatch(req, res) {
     const userId = req.session.userId;
     const role = req.session.role;
 
-    if (!userId) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!["PRINTER", "CUTTER"].includes(role))
+      return res.status(403).json({ error: "Invalid role for scanning" });
 
     const batch = await prisma.batch.findFirst({
       where: { qrCodeToken: token },
@@ -25,56 +25,94 @@ async function scanBatch(req, res) {
     });
 
     if (!batch) return res.status(404).json({ error: "Batch not found" });
-    if (role !== "PRINTER")
-      return res
-        .status(403)
-        .json({ error: "Only printers can scan this batch" });
 
-    if (batch.status !== "PRINTING") {
-      return res.status(400).json({
-        error: `Cannot scan batch in status ${batch.status}`,
+    // 🟩 PRINTER logic — mark as PRINTED
+    if (role === "PRINTER") {
+      if (batch.status !== "PRINTING") {
+        return res.status(400).json({
+          error: `Cannot scan batch in status ${batch.status}. Expected PRINTING.`,
+        });
+      }
+
+      const updatedBatch = await prisma.$transaction(async (tx) => {
+        const updated = await tx.batch.update({
+          where: { id: batch.id },
+          data: { status: "PRINTED" },
+          include: { items: true },
+        });
+
+        await tx.batchItem.updateMany({
+          where: { batchId: batch.id },
+          data: { status: "PRINTED" },
+        });
+
+        const orderItemIds = batch.items.map((i) => i.orderItemId);
+        await tx.orderItem.updateMany({
+          where: { id: { in: orderItemIds } },
+          data: { status: "PRINTED" },
+        });
+
+        const uniqueOrderIds = [
+          ...new Set(batch.items.map((i) => i.orderItem.orderId)),
+        ];
+        for (const orderId of uniqueOrderIds) {
+          await updateOrderStatusFromItems(orderId, tx);
+        }
+
+        return updated;
+      });
+
+      console.log(`🖨️ Printer ${userId} marked batch ${batch.id} as PRINTED`);
+      return res.json({
+        success: true,
+        message: "Batch marked as PRINTED",
+        batch: updatedBatch,
       });
     }
 
-    // Transaction: mark batch + items + orderItems as PRINTED
-    const updatedBatch = await prisma.$transaction(async (tx) => {
-      const updatedBatch = await tx.batch.update({
-        where: { id: batch.id },
-        data: { status: "PRINTED" },
-        include: { items: true },
-      });
-
-      // Update all batch items
-      await tx.batchItem.updateMany({
-        where: { batchId: batch.id },
-        data: { status: "PRINTED" },
-      });
-
-      // Update related order items
-      const orderItemIds = batch.items.map((i) => i.orderItemId);
-      await tx.orderItem.updateMany({
-        where: { id: { in: orderItemIds } },
-        data: { status: "PRINTED" },
-      });
-
-      // Update each order's overall status
-      const uniqueOrderIds = [
-        ...new Set(batch.items.map((i) => i.orderItem.orderId)),
-      ];
-      for (const orderId of uniqueOrderIds) {
-        await updateOrderStatusFromItems(orderId, tx);
+    // 🟦 CUTTER logic — mark as CUT
+    if (role === "CUTTER") {
+      if (batch.status !== "PRINTED") {
+        return res.status(400).json({
+          error: `Cannot scan batch in status ${batch.status}. Expected PRINTED.`,
+        });
       }
 
-      return updatedBatch;
-    });
+      const updatedBatch = await prisma.$transaction(async (tx) => {
+        const updated = await tx.batch.update({
+          where: { id: batch.id },
+          data: { status: "CUT" },
+          include: { items: true },
+        });
 
-    console.log(`✅ Printer ${userId} marked batch ${batch.name} as PRINTED`);
+        await tx.batchItem.updateMany({
+          where: { batchId: batch.id },
+          data: { status: "CUT" },
+        });
 
-    return res.json({
-      success: true,
-      message: "Batch marked as PRINTED",
-      batch: updatedBatch,
-    });
+        const orderItemIds = batch.items.map((i) => i.orderItemId);
+        await tx.orderItem.updateMany({
+          where: { id: { in: orderItemIds } },
+          data: { status: "CUT" },
+        });
+
+        const uniqueOrderIds = [
+          ...new Set(batch.items.map((i) => i.orderItem.orderId)),
+        ];
+        for (const orderId of uniqueOrderIds) {
+          await updateOrderStatusFromItems(orderId, tx);
+        }
+
+        return updated;
+      });
+
+      console.log(`✂️ Cutter ${userId} marked batch ${batch.id} as CUT`);
+      return res.json({
+        success: true,
+        message: "Batch marked as CUT",
+        batch: updatedBatch,
+      });
+    }
   } catch (err) {
     console.error("Batch scan error:", err);
     return res.status(500).json({ error: "Internal server error" });
@@ -245,15 +283,11 @@ async function scanItemFulfillment(req, res) {
     const user = req.session.user;
 
     if (!user) {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/`
-      );
+      return res.redirect(`${process.env.FRONTEND_URL}/`);
     }
 
     if (user.role !== "FULFILLMENT") {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/`
-      );
+      return res.redirect(`${process.env.FRONTEND_URL}/`);
     }
 
     const batchItem = await prisma.batchItem.findFirst({

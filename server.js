@@ -22,7 +22,7 @@ const {
 
 const app = express();
 
-app.set("trust proxy", 1);
+// app.set("trust proxy", 1);
 
 app.use(
   compression({
@@ -41,8 +41,8 @@ app.use(
     keys: [process.env.SESSION_SECRET],
     maxAge: 24 * 60 * 60 * 1000,
     httpOnly: true,
-    secure: true,
-    sameSite: "none",
+    secure: false,
+    sameSite: "strict",
   })
 );
 

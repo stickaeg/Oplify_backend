@@ -96,7 +96,7 @@ async function listBatches(req, res) {
       maxCapacity: batch.maxCapacity,
       status: batch.status,
       createdAt: batch.createdAt,
-
+      qrCodeUrl: batch.qrCodeUrl,
       rules: batch.rules.map((r) => ({
         id: r.id,
         name: r.name,
