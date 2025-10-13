@@ -19,6 +19,7 @@ async function scanBatch(req, res) {
         items: {
           include: {
             orderItem: { select: { id: true, orderId: true } },
+            units: true,
           },
         },
       },
@@ -26,7 +27,7 @@ async function scanBatch(req, res) {
 
     if (!batch) return res.status(404).json({ error: "Batch not found" });
 
-    // 🟩 PRINTER logic — mark as PRINTED
+    // 🟩 Printer logic
     if (role === "PRINTER") {
       if (batch.status !== "PRINTING") {
         return res.status(400).json({
@@ -35,23 +36,32 @@ async function scanBatch(req, res) {
       }
 
       const updatedBatch = await prisma.$transaction(async (tx) => {
+        // Update the batch itself
         const updated = await tx.batch.update({
           where: { id: batch.id },
           data: { status: "PRINTED" },
-          include: { items: true },
         });
 
+        // Update batch items
         await tx.batchItem.updateMany({
           where: { batchId: batch.id },
           data: { status: "PRINTED" },
         });
 
+        // Update all batch item units
+        await tx.batchItemUnit.updateMany({
+          where: { batchItem: { batchId: batch.id } },
+          data: { status: "PRINTED" },
+        });
+
+        // Update related order items
         const orderItemIds = batch.items.map((i) => i.orderItemId);
         await tx.orderItem.updateMany({
           where: { id: { in: orderItemIds } },
           data: { status: "PRINTED" },
         });
 
+        // Update parent orders
         const uniqueOrderIds = [
           ...new Set(batch.items.map((i) => i.orderItem.orderId)),
         ];
@@ -65,12 +75,12 @@ async function scanBatch(req, res) {
       console.log(`🖨️ Printer ${userId} marked batch ${batch.id} as PRINTED`);
       return res.json({
         success: true,
-        message: "Batch marked as PRINTED",
+        message: "Batch marked as PRINTED (including units)",
         batch: updatedBatch,
       });
     }
 
-    // 🟦 CUTTER logic — mark as CUT
+    // 🟦 Cutter logic
     if (role === "CUTTER") {
       if (batch.status !== "PRINTED") {
         return res.status(400).json({
@@ -82,11 +92,15 @@ async function scanBatch(req, res) {
         const updated = await tx.batch.update({
           where: { id: batch.id },
           data: { status: "CUT" },
-          include: { items: true },
         });
 
         await tx.batchItem.updateMany({
           where: { batchId: batch.id },
+          data: { status: "CUT" },
+        });
+
+        await tx.batchItemUnit.updateMany({
+          where: { batchItem: { batchId: batch.id } },
           data: { status: "CUT" },
         });
 
@@ -109,7 +123,7 @@ async function scanBatch(req, res) {
       console.log(`✂️ Cutter ${userId} marked batch ${batch.id} as CUT`);
       return res.json({
         success: true,
-        message: "Batch marked as CUT",
+        message: "Batch marked as CUT (including units)",
         batch: updatedBatch,
       });
     }
