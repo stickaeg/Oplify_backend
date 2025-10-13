@@ -3,17 +3,13 @@ const express = require("express");
 const router = express.Router();
 const {
   scanBatch,
-  scanUnitCutter,
-  scanItemFulfillment,
+  scanUnitFulfillment,
 } = require("../controllers/scan.controllers");
 
 // Batch QR scan (Printer)
 router.get("/batch/:token", scanBatch);
 
-// Item QR scan (Cutter)
-router.get("/unit/:token", scanUnitCutter);
-
 // Item QR scan (Fulfillment)
-router.get("/item-fulfillment/:token", scanItemFulfillment);
+router.get("/item-fulfillment/:token", scanUnitFulfillment);
 
 module.exports = router;

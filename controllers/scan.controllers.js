@@ -133,257 +133,133 @@ async function scanBatch(req, res) {
   }
 }
 
-// 🟨 SCAN UNIT QR (Cutter scans stickers to mark as CUT)
-async function scanUnitCutter(req, res) {
-  try {
-    const { token } = req.params;
-    const userId = req.session.userId;
-    const role = req.session.role;
-
-    if (!userId)
-      return res.status(401).json({ error: "Unauthorized: Please log in" });
-
-    if (!["CUTTER", "PRINTER"].includes(role))
-      return res.status(403).json({ error: "Access denied" });
-
-    // 🔍 Find the unit by QR token
-    const unit = await prisma.batchItemUnit.findFirst({
-      where: { qrCodeToken: token },
-      include: {
-        batchItem: {
-          include: {
-            units: true,
-            orderItem: {
-              include: {
-                order: { select: { id: true, orderNumber: true } },
-                product: { select: { title: true } },
-              },
-            },
-            batch: {
-              include: { items: { include: { units: true } } },
-            },
-          },
-        },
-      },
-    });
-
-    if (!unit) return res.status(404).json({ error: "Unit not found" });
-
-    const { batchItem } = unit;
-    let updatedStatus = null;
-
-    await prisma.$transaction(async (tx) => {
-      // 🖨️ PRINTER logic
-      if (role === "PRINTER") {
-        if (unit.status !== "PRINTING") {
-          throw new Error("Unit is not ready for printing");
-        }
-
-        await tx.batchItemUnit.update({
-          where: { id: unit.id },
-          data: { status: "PRINTED" },
-        });
-        updatedStatus = "PRINTED";
-
-        const allUnitsPrinted = batchItem.units.every(
-          (u) => u.id === unit.id || u.status === "PRINTED"
-        );
-
-        if (allUnitsPrinted) {
-          await tx.batchItem.update({
-            where: { id: batchItem.id },
-            data: { status: "PRINTED" },
-          });
-
-          await tx.orderItem.update({
-            where: { id: batchItem.orderItemId },
-            data: { status: "PRINTED" },
-          });
-
-          await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
-        }
-
-        const allItemsPrinted = batchItem.batch.items.every((item) =>
-          item.units.every((unit) => unit.status === "PRINTED")
-        );
-
-        if (allItemsPrinted) {
-          await tx.batch.update({
-            where: { id: batchItem.batch.id },
-            data: { status: "PRINTED" },
-          });
-        }
-
-        console.log(`🖨️ Printer ${userId} marked unit ${unit.id} as PRINTED`);
-      }
-
-      // ✂️ CUTTER logic
-      if (role === "CUTTER") {
-        const freshUnit = await tx.batchItemUnit.findUnique({
-          where: { id: unit.id },
-          select: { status: true },
-        });
-
-        if (freshUnit.status !== "PRINTED") {
-          throw new Error("Unit must be PRINTED before cutting");
-        }
-
-        await tx.batchItemUnit.update({
-          where: { id: unit.id },
-          data: { status: "CUT" },
-        });
-        updatedStatus = "CUT";
-
-        // Count remaining non-CUT units for this batch item
-        const remainingUnits = await tx.batchItemUnit.count({
-          where: {
-            batchItemId: batchItem.id,
-            status: { not: "CUT" },
-          },
-        });
-
-        if (remainingUnits === 0) {
-          await tx.batchItem.update({
-            where: { id: batchItem.id },
-            data: { status: "CUT" },
-          });
-
-          await tx.orderItem.update({
-            where: { id: batchItem.orderItemId },
-            data: { status: "CUT" },
-          });
-
-          await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
-        }
-
-        // Count remaining non-CUT units across all items in batch
-        const remainingBatchUnits = await tx.batchItemUnit.count({
-          where: {
-            batchItem: { batchId: batchItem.batchId },
-            status: { not: "CUT" },
-          },
-        });
-
-        if (remainingBatchUnits === 0) {
-          await tx.batch.update({
-            where: { id: batchItem.batchId },
-            data: { status: "CUT" },
-          });
-        }
-
-        console.log(`✂️ Cutter ${userId} marked unit ${unit.id} as CUT`);
-      }
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: `${role} marked unit as ${updatedStatus}`,
-      unitId: unit.id,
-      newStatus: updatedStatus,
-      batchItemId: batchItem.id,
-      batchId: batchItem.batchId,
-    });
-  } catch (err) {
-    console.error("❌ Unit scan error:", err);
-    return res.status(400).json({ success: false, error: err.message });
-  }
-}
-
 // 🟦 SCAN ITEM QR (Fulfillment scans to mark as PACKED)
-
-async function scanItemFulfillment(req, res) {
+async function scanUnitFulfillment(req, res) {
   try {
     const { token } = req.params;
     const user = req.session.user;
 
-    if (!user) {
-      return res.redirect(`${process.env.FRONTEND_URL}/`);
-    }
+    if (!user)
+      return res.status(401).json({ error: "Unauthorized: Please log in" });
+    if (user.role !== "FULFILLMENT")
+      return res.status(403).json({ error: "Access denied: FULFILLMENT only" });
 
-    if (user.role !== "FULFILLMENT") {
-      return res.redirect(`${process.env.FRONTEND_URL}/`);
-    }
-
-    const batchItem = await prisma.batchItem.findFirst({
+    // 🔍 Find the batch unit by QR token
+    const unit = await prisma.batchItemUnit.findUnique({
       where: { qrCodeToken: token },
       include: {
-        orderItem: {
+        batchItem: {
           include: {
-            order: {
-              select: { id: true, orderNumber: true },
+            batch: true,
+            units: true,
+            orderItem: {
               include: {
-                items: { select: { id: true, status: true } },
+                order: {
+                  include: {
+                    items: {
+                      include: {
+                        product: true,
+                        variant: true,
+                        BatchItem: {
+                          include: { units: true },
+                        },
+                      },
+                    },
+                  },
+                },
+                product: true,
+                variant: true,
               },
             },
-            product: { select: { title: true, imgUrl: true } },
-            variant: { select: { title: true, sku: true } },
           },
         },
-        batch: { select: { id: true, name: true } },
       },
     });
 
-    if (!batchItem) {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/error?message=Invalid item QR`
-      );
+    if (!unit)
+      return res.status(404).json({ error: "Invalid or unknown QR code" });
+
+    const batchItem = unit.batchItem;
+    const orderItem = batchItem.orderItem;
+    const order = orderItem.order;
+
+    // 🚫 Ensure this unit was already cut
+    if (unit.status !== "CUT") {
+      return res.status(400).json({ error: "Unit must be CUT before packing" });
     }
 
-    if (batchItem.status !== "CUT") {
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/error?message=Item must be CUT before packing`
-      );
-    }
-
-    // Update item to PACKED
+    // 🧩 Transactionally update statuses
     await prisma.$transaction(async (tx) => {
-      await tx.batchItem.update({
-        where: { id: batchItem.id },
+      // 1️⃣ Update the scanned unit
+      await tx.batchItemUnit.update({
+        where: { id: unit.id },
         data: { status: "PACKED" },
       });
 
-      await tx.orderItem.update({
-        where: { id: batchItem.orderItemId },
-        data: { status: "PACKED" },
-      });
-
-      await updateOrderStatusFromItems(batchItem.orderItem.order.id, tx);
-
-      // ✅ Check if all items in order are PACKED
-      const allItems = batchItem.orderItem.order.items;
-      const allPacked = allItems.every((item) =>
-        item.id === batchItem.orderItemId ? true : item.status === "PACKED"
+      // 2️⃣ If all units in this BatchItem are packed → PACKED
+      const allUnitsPacked = batchItem.units.every(
+        (u) => u.id === unit.id || u.status === "PACKED"
       );
+      if (allUnitsPacked) {
+        await tx.batchItem.update({
+          where: { id: batchItem.id },
+          data: { status: "PACKED" },
+        });
+      }
 
-      if (allPacked) {
+      // 3️⃣ If all BatchItems for this orderItem are packed → PACKED
+      const allItemUnitsPacked = orderItem.BatchItem.every((bi) =>
+        bi.units.every((u) => (u.id === unit.id ? true : u.status === "PACKED"))
+      );
+      if (allItemUnitsPacked) {
+        await tx.orderItem.update({
+          where: { id: orderItem.id },
+          data: { status: "PACKED" },
+        });
+      }
+
+      // 4️⃣ If all orderItems are packed → COMPLETED
+      const allItemsPacked = order.items.every(
+        (item) => item.id === orderItem.id || item.status === "PACKED"
+      );
+      if (allItemsPacked) {
         await tx.order.update({
-          where: { id: batchItem.orderItem.order.id },
+          where: { id: order.id },
           data: { status: "COMPLETED" },
         });
-        console.log(
-          `✅ Order ${batchItem.orderItem.order.orderNumber} is COMPLETED`
-        );
       }
     });
 
-    console.log(
-      `✅ Fulfillment ${user.name} marked item ${batchItem.id} as PACKED`
-    );
+    // ✅ Fetch updated order with all details
+    const updatedOrder = await prisma.order.findUnique({
+      where: { id: order.id },
+      include: {
+        items: {
+          include: {
+            product: { select: { id: true, title: true, imgUrl: true } },
+            variant: { select: { id: true, title: true, sku: true } },
+            BatchItem: {
+              include: {
+                units: { select: { id: true, status: true } },
+              },
+            },
+          },
+        },
+      },
+    });
 
-    // Redirect to order page
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/orders/${batchItem.orderItem.order.id}?scan=success&itemPacked=${batchItem.id}`
-    );
+    // ✅ Respond with success + full order details
+    return res.json({
+      message: "Unit packed successfully",
+      order: updatedOrder,
+    });
   } catch (err) {
-    console.error("Fulfillment scan error:", err);
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/error?message=Server error`
-    );
+    console.error("❌ Fulfillment scan error:", err);
+    return res.status(500).json({ error: "Internal server error" });
   }
 }
 
 module.exports = {
   scanBatch,
-  scanUnitCutter,
-  scanItemFulfillment,
+  scanUnitFulfillment,
 };

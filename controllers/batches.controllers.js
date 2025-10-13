@@ -152,7 +152,7 @@ async function getBatchById(req, res) {
                 variant: true,
               },
             },
-            units: true, // ✅ no nested include needed here
+            units: true,
           },
         },
         File: true,
@@ -169,30 +169,26 @@ async function getBatchById(req, res) {
       status: batch.status,
       createdAt: batch.createdAt,
       updatedAt: batch.updatedAt,
-      qrCodeUrl: batch.qrCodeUrl,
-
       rules: batch.rules.map((r) => ({
         id: r.id,
         name: r.name,
         storeId: r.storeId,
         isPod: r.isPod,
       })),
-
       items: batch.items.map((bi) => ({
         id: bi.id,
         totalUnits: bi.units.length,
+        productTitle: bi.orderItem?.product?.title ?? null,
+        productImgUrl: bi.orderItem?.product?.imgUrl ?? null, // 👈 add this line
+
+        sku: bi.orderItem?.variant?.sku ?? null,
+        orderNumber: bi.orderItem?.order?.orderNumber ?? null,
+        storeName: bi.orderItem?.order?.store?.name ?? null,
         units: bi.units.map((u) => ({
           id: u.id,
           status: u.status,
-          qrCodeUrl: u.qrCodeUrl,
-          // 🧩 Access order info through the parent batch item’s orderItem
-          orderNumber: bi.orderItem?.order?.orderNumber ?? null,
-          productTitle: bi.orderItem?.product?.title ?? null,
-          storeName: bi.orderItem?.order?.store?.name ?? null,
-          sku: bi.orderItem?.variant?.sku ?? null,
         })),
       })),
-
       files: batch.File.map((f) => ({
         id: f.id,
         name: f.name,
