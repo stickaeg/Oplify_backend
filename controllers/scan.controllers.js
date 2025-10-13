@@ -143,7 +143,9 @@ async function scanUnitFulfillment(req, res) {
     if (!userId)
       return res.status(401).json({ error: "Unauthorized: Please log in" });
     if (role !== "FULLFILLMENT")
-      return res.status(403).json({ error: "Access denied: FULFILLMENT only" });
+      return res
+        .status(403)
+        .json({ error: "Access denied: FULLFILLMENT only" });
 
     // 🔍 Find the batch unit by QR token
     const unit = await prisma.batchItemUnit.findUnique({
@@ -155,15 +157,14 @@ async function scanUnitFulfillment(req, res) {
             units: true,
             orderItem: {
               include: {
+                BatchItem: { include: { units: true } }, // ✅ fix
                 order: {
                   include: {
                     items: {
                       include: {
                         product: true,
                         variant: true,
-                        BatchItem: {
-                          include: { units: true },
-                        },
+                        BatchItem: { include: { units: true } },
                       },
                     },
                   },
@@ -184,20 +185,16 @@ async function scanUnitFulfillment(req, res) {
     const orderItem = batchItem.orderItem;
     const order = orderItem.order;
 
-    // 🚫 Ensure this unit was already cut
-    if (unit.status !== "CUT") {
+    if (unit.status !== "CUT")
       return res.status(400).json({ error: "Unit must be CUT before packing" });
-    }
 
     // 🧩 Transactionally update statuses
     await prisma.$transaction(async (tx) => {
-      // 1️⃣ Update the scanned unit
       await tx.batchItemUnit.update({
         where: { id: unit.id },
         data: { status: "PACKED" },
       });
 
-      // 2️⃣ If all units in this BatchItem are packed → PACKED
       const allUnitsPacked = batchItem.units.every(
         (u) => u.id === unit.id || u.status === "PACKED"
       );
@@ -208,8 +205,7 @@ async function scanUnitFulfillment(req, res) {
         });
       }
 
-      // 3️⃣ If all BatchItems for this orderItem are packed → PACKED
-      const allItemUnitsPacked = orderItem.BatchItem.every((bi) =>
+      const allItemUnitsPacked = orderItem.BatchItem?.every((bi) =>
         bi.units.every((u) => (u.id === unit.id ? true : u.status === "PACKED"))
       );
       if (allItemUnitsPacked) {
@@ -219,7 +215,6 @@ async function scanUnitFulfillment(req, res) {
         });
       }
 
-      // 4️⃣ If all orderItems are packed → COMPLETED
       const allItemsPacked = order.items.every(
         (item) => item.id === orderItem.id || item.status === "PACKED"
       );
@@ -231,7 +226,6 @@ async function scanUnitFulfillment(req, res) {
       }
     });
 
-    // ✅ Fetch updated order with all details
     const updatedOrder = await prisma.order.findUnique({
       where: { id: order.id },
       include: {
@@ -249,7 +243,6 @@ async function scanUnitFulfillment(req, res) {
       },
     });
 
-    // ✅ Respond with success + full order details
     return res.json({
       message: "Unit packed successfully",
       order: updatedOrder,
