@@ -188,6 +188,9 @@ async function scanUnitFulfillment(req, res) {
     if (unit.status !== "CUT")
       return res.status(400).json({ error: "Unit must be CUT before packing" });
 
+    if (unit.status === "PACKED")
+      return res.status(400).json({ error: "Unit packed before" });
+
     // 🧩 Transactionally update statuses
     await prisma.$transaction(async (tx) => {
       await tx.batchItemUnit.update({
