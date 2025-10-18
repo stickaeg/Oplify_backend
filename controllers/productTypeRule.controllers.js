@@ -125,28 +125,62 @@ async function deleteRule(req, res) {
     // 1️⃣ Find related batches
     const relatedBatches = await prisma.batch.findMany({
       where: { rules: { some: { id } } },
+      select: { id: true },
     });
 
-    // 2️⃣ Delete related batches (and cascade down BatchItems, etc.)
-    await prisma.batch.deleteMany({
-      where: { id: { in: relatedBatches.map((b) => b.id) } },
-    });
+    const batchIds = relatedBatches.map((b) => b.id);
 
-    // 3️⃣ Delete the rule itself
+    if (batchIds.length > 0) {
+      // 2️⃣ Find all BatchItems in these batches
+      const batchItems = await prisma.batchItem.findMany({
+        where: { batchId: { in: batchIds } },
+        select: { id: true },
+      });
+
+      const batchItemIds = batchItems.map((bi) => bi.id);
+
+      // 3️⃣ Delete BatchItemUnits first (deepest level)
+      if (batchItemIds.length > 0) {
+        await prisma.batchItemUnit.deleteMany({
+          where: { batchItemId: { in: batchItemIds } },
+        });
+      }
+
+      // 4️⃣ Delete BatchItems
+      await prisma.batchItem.deleteMany({
+        where: { batchId: { in: batchIds } },
+      });
+
+      // 5️⃣ Delete Files linked to batches
+      await prisma.file.deleteMany({
+        where: { batchId: { in: batchIds } },
+      });
+
+      // 6️⃣ Delete Batches
+      await prisma.batch.deleteMany({
+        where: { id: { in: batchIds } },
+      });
+    }
+
+    // 7️⃣ Delete the rule itself
     const rule = await prisma.productTypeRule.delete({
       where: { id },
     });
 
-    // 4️⃣ Optionally, update products linked to this rule
+    // 8️⃣ Optionally, update products linked to this rule
     await prisma.product.updateMany({
       where: { productType: rule.name },
       data: { isPod: false },
     });
 
-    res.json({ message: "Rule and related batches deleted", rule });
+    res.json({
+      message: "Rule and related data deleted successfully",
+      rule,
+      deletedBatches: batchIds.length,
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).send("Server error");
+    res.status(500).json({ error: "Server error", details: err.message });
   }
 }
 
