@@ -1,106 +1,8 @@
 const prisma = require("../prisma/client");
 
-async function listOrders(req, res) {async function listOrders(req, res) {
+async function listOrders(req, res) {
   try {
     const { page = 1, limit = 20, storeId, status, search } = req.query;
-
-    const take = parseInt(limit);
-    const skip = (parseInt(page) - 1) * take;
-
-    let where = {};
-
-    // Role-based filtering
-    if (req.session.role === "USER") {
-      if (!req.session.storeId) {
-        return res.status(403).json({ error: "No store assigned to this user" });
-      }
-      where.storeId = req.session.storeId;
-    } else {
-      // ADMIN and other roles can filter optionally
-      if (storeId) where.storeId = storeId;
-    }
-
-    // Optional status filter
-    if (status) {
-      where.status = status;
-    }
-
-    // Optional search filter
-    if (search) {
-      const searchTerm = search.trim();
-      where.OR = [
-        { customerName: { contains: searchTerm, mode: "insensitive" } },
-        { customerEmail: { contains: searchTerm, mode: "insensitive" } },
-        { orderNumber: { contains: searchTerm, mode: "insensitive" } },
-        { shopifyId: { contains: searchTerm, mode: "insensitive" } },
-        {
-          store: {
-            name: { contains: searchTerm, mode: "insensitive" },
-          },
-        },
-      ];
-    }
-
-    const [orders, total] = await Promise.all([
-      prisma.order.findMany({
-        where,
-        skip,
-        take,
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          shopifyId: true,
-          orderNumber: true,
-          storeId: true,
-          customerName: true,
-          customerEmail: true,
-          totalPrice: true,
-          status: true,
-          createdAt: true,
-          updatedAt: true,
-          items: {
-            include: {
-              product: {
-                select: {
-                  id: true,
-                  title: true,
-                  imgUrl: true,
-                  productType: true,
-                },
-              },
-              variant: {
-                select: {
-                  id: true,
-                  sku: true,
-                  title: true,
-                  price: true,
-                },
-              },
-            },
-          },
-          store: {
-            select: { id: true, name: true, shopDomain: true },
-          },
-        },
-      }),
-      prisma.order.count({ where }),
-    ]);
-
-    return res.json({
-      page: parseInt(page),
-      limit: take,
-      total,
-      pages: Math.ceil(total / take),
-      data: orders,
-    });
-  } catch (err) {
-    console.error("Error listing orders:", err);
-    return res.status(500).send("Server error");
-  }
-}
-
-  try {
-    const { page = 1, limit = 20, storeId, status } = req.query;
 
     const take = parseInt(limit);
     const skip = (parseInt(page) - 1) * take;
@@ -125,6 +27,24 @@ async function listOrders(req, res) {async function listOrders(req, res) {
       where.status = status;
     }
 
+    // ✅ Optional search filter (search by order number only)
+    if (search) {
+      const orderNumber = parseInt(search.trim());
+      if (!isNaN(orderNumber)) {
+        where.orderNumber = orderNumber;
+      } else {
+        // Invalid search (not a number) → return empty result
+        return res.json({
+          page: parseInt(page),
+          limit: take,
+          total: 0,
+          pages: 0,
+          data: [],
+        });
+      }
+    }
+
+    // Fetch data + total count
     const [orders, total] = await Promise.all([
       prisma.order.findMany({
         where,
