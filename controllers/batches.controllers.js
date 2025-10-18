@@ -66,9 +66,19 @@ async function listBatches(req, res) {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const total = await prisma.batch.count();
+    const { ruleName } = req.query;
+
+    const where = {};
+
+    if (ruleName) {
+      // 🔍 filter by rule name
+      where.rules = { some: { name: ruleName } };
+    }
+
+    const total = await prisma.batch.count({ where });
 
     const batches = await prisma.batch.findMany({
+      where, // ✅ apply filter
       skip,
       take: limit,
       include: {
@@ -82,7 +92,7 @@ async function listBatches(req, res) {
                 variant: true,
               },
             },
-            units: true, // ✅ now include units directly, no nested orderItem here
+            units: true,
           },
         },
       },
@@ -103,7 +113,6 @@ async function listBatches(req, res) {
         storeId: r.storeId,
         isPod: r.isPod,
       })),
-
       items: batch.items.map((bi) => ({
         id: bi.id,
         totalUnits: bi.units.length,

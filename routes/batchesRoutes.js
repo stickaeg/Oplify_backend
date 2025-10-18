@@ -6,8 +6,12 @@ const {
   updateBatchStatus,
   getBatchById,
 } = require("../controllers/batches.controllers");
+const { listRules } = require("../controllers/productTypeRule.controllers");
 
 router.get("/", listBatches);
+
+router.get("/rules", listRules); 
+
 
 router.get("/:batchId", getBatchById);
 

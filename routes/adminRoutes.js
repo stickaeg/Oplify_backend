@@ -18,7 +18,9 @@ router.post("/stores", addStore); // POST /admin/stores
 
 // ----- Product Type Rules -----
 router.post("/rules", createRule); // POST /admin/rules
+
 router.put("/rules/:id", updateRule); // PUT /admin/rules/:id
+
 router.get("/rules", listRules); // GET /admin/rules
 
 router.get("/rules/store/:storeName", listProductTypesByStore);
