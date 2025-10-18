@@ -248,6 +248,10 @@ async function scanUnitFulfillment(req, res) {
 
     return res.json({
       message: "Unit packed successfully",
+      batch: {
+        id: unit.batchItem.batch.id,
+        name: unit.batchItem.batch.name,
+      },
       order: updatedOrder,
     });
   } catch (err) {
