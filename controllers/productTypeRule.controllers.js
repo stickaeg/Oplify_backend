@@ -122,20 +122,31 @@ async function deleteRule(req, res) {
   try {
     const { id } = req.params;
 
+    // 1️⃣ Find related batches
+    const relatedBatches = await prisma.batch.findMany({
+      where: { rules: { some: { id } } },
+    });
+
+    // 2️⃣ Delete related batches (and cascade down BatchItems, etc.)
+    await prisma.batch.deleteMany({
+      where: { id: { in: relatedBatches.map((b) => b.id) } },
+    });
+
+    // 3️⃣ Delete the rule itself
     const rule = await prisma.productTypeRule.delete({
       where: { id },
     });
 
-    // When deleting a rule, you might want to reset products to default (stock)
+    // 4️⃣ Optionally, update products linked to this rule
     await prisma.product.updateMany({
       where: { productType: rule.name },
       data: { isPod: false },
     });
 
-    return res.json({ message: "Rule deleted", rule });
+    res.json({ message: "Rule and related batches deleted", rule });
   } catch (err) {
     console.error(err);
-    return res.status(500).send("server error");
+    res.status(500).send("Server error");
   }
 }
 
