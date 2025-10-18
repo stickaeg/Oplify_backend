@@ -2,7 +2,7 @@ const prisma = require("../prisma/client");
 
 async function listOrders(req, res) {
   try {
-    const { page = 1, limit = 20, storeId, status, search } = req.query;
+    const { page = 1, limit = 20, storeId, status, search, startDate, endDate } = req.query;
 
     const take = parseInt(limit);
     const skip = (parseInt(page) - 1) * take;
@@ -12,13 +12,10 @@ async function listOrders(req, res) {
     // Role-based filtering
     if (req.session.role === "USER") {
       if (!req.session.storeId) {
-        return res
-          .status(403)
-          .json({ error: "No store assigned to this user" });
+        return res.status(403).json({ error: "No store assigned to this user" });
       }
       where.storeId = req.session.storeId;
     } else {
-      // ADMIN and other roles can filter optionally
       if (storeId) where.storeId = storeId;
     }
 
@@ -27,7 +24,19 @@ async function listOrders(req, res) {
       where.status = status;
     }
 
-    // ✅ Optional search filter (search by order number only)
+    // ✅ Optional date range filter
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) {
+        // Include all orders up to end of day
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+
+    // ✅ Optional search filter (by order number only)
     if (search) {
       const orderNumber = parseInt(search.trim());
       if (!isNaN(orderNumber)) {
@@ -102,6 +111,7 @@ async function listOrders(req, res) {
     return res.status(500).send("Server error");
   }
 }
+
 
 async function getOrderDetails(req, res) {
   try {
