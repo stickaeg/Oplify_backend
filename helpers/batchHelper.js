@@ -28,6 +28,7 @@ async function assignOrderItemsToBatches(orderItems) {
       where: {
         name: { equals: product.productType, mode: "insensitive" },
         isPod: true,
+        storeId: product.storeId,
       },
     });
 
@@ -44,11 +45,10 @@ async function assignOrderItemsToBatches(orderItems) {
       // 4️⃣ Find existing batches for this rule
       const batches = await prisma.batch.findMany({
         where: {
-          rules: { some: { id: rule.id } },
+          rules: { some: { id: rule.id, storeId: product.storeId } }, // 👈 ensure same store
         },
         orderBy: { createdAt: "asc" },
       });
-
       // Find one with available space
       let availableBatch = batches.find((b) => b.capacity < b.maxCapacity);
 
@@ -65,6 +65,7 @@ async function assignOrderItemsToBatches(orderItems) {
 
         const countForThisName = await prisma.batch.count({
           where: { name: { startsWith: baseName } },
+          rules: { some: { storeId: product.storeId } }, 
         });
 
         const newBatchName =
