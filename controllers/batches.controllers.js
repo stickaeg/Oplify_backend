@@ -30,8 +30,14 @@ async function createBatch(req, res) {
     }
 
     const baseName = batchName.trim();
+
     const countForThisName = await prisma.batch.count({
-      where: { name: { startsWith: baseName } },
+      where: {
+        AND: [
+          { name: { startsWith: baseName } },
+          { rules: { some: { storeId: product.storeId } } }, // ✅ proper relational filter
+        ],
+      },
     });
 
     const finalBatchName =
