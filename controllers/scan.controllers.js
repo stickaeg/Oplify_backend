@@ -185,12 +185,38 @@ async function scanUnitFulfillment(req, res) {
     const orderItem = batchItem.orderItem;
     const order = orderItem.order;
 
+    // ✅ If it's already packed, just return the current order instead of error
+    if (unit.status === "PACKED") {
+      const currentOrder = await prisma.order.findUnique({
+        where: { id: order.id },
+        include: {
+          items: {
+            include: {
+              product: { select: { id: true, title: true, imgUrl: true } },
+              variant: { select: { id: true, title: true, sku: true } },
+              BatchItem: {
+                include: {
+                  units: { select: { id: true, status: true } },
+                  batch: { select: { id: true, name: true, status: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return res.status(200).json({
+        message: `Unit already packed (Batch: ${batch.name})`,
+        batch: { id: batch.id, name: batch.name },
+        order: currentOrder,
+      });
+    }
+
+    // ✅ Only block if it's in an invalid state
     if (unit.status !== "CUT")
       return res.status(400).json({ error: "Unit must be CUT before packing" });
 
-    if (unit.status === "PACKED")
-      return res.status(400).json({ error: "Unit already packed" });
-
+    // ✅ Transaction for status update
     await prisma.$transaction(async (tx) => {
       await tx.batchItemUnit.update({
         where: { id: unit.id },
@@ -228,7 +254,7 @@ async function scanUnitFulfillment(req, res) {
       }
     });
 
-    // ✅ Re-fetch complete order with all nested relations
+    // ✅ Re-fetch complete order
     const updatedOrder = await prisma.order.findUnique({
       where: { id: order.id },
       include: {
@@ -247,13 +273,9 @@ async function scanUnitFulfillment(req, res) {
       },
     });
 
-    // ✅ Correct return statement
     return res.status(200).json({
       message: `Unit packed successfully (Batch: ${batch.name})`,
-      batch: {
-        id: batch.id,
-        name: batch.name,
-      },
+      batch: { id: batch.id, name: batch.name },
       order: updatedOrder,
     });
   } catch (err) {

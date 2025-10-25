@@ -381,10 +381,27 @@ async function updateOrderItemStatus(req, res) {
 
       return updatedItem;
     });
+    const updatedOrder = await prisma.order.findUnique({
+      where: { id: updated.orderId },
+      include: {
+        items: {
+          include: {
+            product: { select: { id: true, title: true, imgUrl: true } },
+            variant: { select: { id: true, title: true, sku: true } },
+            BatchItem: {
+              include: {
+                units: { select: { id: true, status: true } },
+                batch: { select: { id: true, name: true, status: true } },
+              },
+            },
+          },
+        },
+      },
+    });
 
     return res.status(200).json({
       message: `Order item status updated to ${status}`,
-      orderItem: updated,
+      order: updatedOrder, // ✅ same shape as scanner endpoint
     });
   } catch (err) {
     console.error("❌ Error updating order item status:", err);
