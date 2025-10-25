@@ -147,13 +147,12 @@ async function scanUnitFulfillment(req, res) {
         .status(403)
         .json({ error: "Access denied: FULLFILLMENT only" });
 
-    // 🔍 Find the batch unit by QR token
     const unit = await prisma.batchItemUnit.findUnique({
       where: { qrCodeToken: token },
       include: {
         batchItem: {
           include: {
-            batch: true, // ✅ Ensure we get batch info
+            batch: true,
             units: true,
             orderItem: {
               include: {
@@ -190,17 +189,14 @@ async function scanUnitFulfillment(req, res) {
       return res.status(400).json({ error: "Unit must be CUT before packing" });
 
     if (unit.status === "PACKED")
-      return res.status(400).json({ error: "Unit packed before" });
+      return res.status(400).json({ error: "Unit already packed" });
 
-    // 🧩 Transactionally update statuses
     await prisma.$transaction(async (tx) => {
-      // Update unit status
       await tx.batchItemUnit.update({
         where: { id: unit.id },
         data: { status: "PACKED" },
       });
 
-      // Update batch item if all units packed
       const allUnitsPacked = batchItem.units.every(
         (u) => u.id === unit.id || u.status === "PACKED"
       );
@@ -211,7 +207,6 @@ async function scanUnitFulfillment(req, res) {
         });
       }
 
-      // Update order item if all related batch items’ units are packed
       const allItemUnitsPacked = orderItem.BatchItem?.every((bi) =>
         bi.units.every((u) => (u.id === unit.id ? true : u.status === "PACKED"))
       );
@@ -222,7 +217,6 @@ async function scanUnitFulfillment(req, res) {
         });
       }
 
-      // Update order if all items packed
       const allItemsPacked = order.items.every(
         (item) => item.id === orderItem.id || item.status === "PACKED"
       );
@@ -234,7 +228,7 @@ async function scanUnitFulfillment(req, res) {
       }
     });
 
-    // 🧾 Re-fetch order (including batch info for each item)
+    // ✅ Re-fetch complete order with all nested relations
     const updatedOrder = await prisma.order.findUnique({
       where: { id: order.id },
       include: {
@@ -253,22 +247,14 @@ async function scanUnitFulfillment(req, res) {
       },
     });
 
-    const orderItemIds = updatedOrder.items.map((item) => ({
-      id: item.id,
-      productTitle: item.product.title,
-      variantTitle: item.variant?.title || null,
-      status: item.status,
-    }));
-
-    // ✅ Return success response with batch name
-    return res.json({
+    // ✅ Correct return statement
+    return res.status(200).json({
       message: `Unit packed successfully (Batch: ${batch.name})`,
       batch: {
         id: batch.id,
         name: batch.name,
       },
       order: updatedOrder,
-      orderItemIds,
     });
   } catch (err) {
     console.error("❌ Fulfillment scan error:", err);
