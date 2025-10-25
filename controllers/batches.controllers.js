@@ -35,7 +35,7 @@ async function createBatch(req, res) {
       where: {
         AND: [
           { name: { startsWith: baseName } },
-          { rules: { some: { storeId: product.storeId } } }, // ✅ proper relational filter
+          { rules: { some: { storeId: product.storeId } } },
         ],
       },
     });
