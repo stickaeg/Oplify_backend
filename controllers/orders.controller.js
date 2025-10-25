@@ -1,3 +1,4 @@
+const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 const prisma = require("../prisma/client");
 
 async function listOrders(req, res) {
@@ -387,12 +388,10 @@ async function updateOrderItemStatus(req, res) {
     });
   } catch (err) {
     console.error("❌ Error updating order item status:", err);
-    return res
-      .status(500)
-      .json({
-        message: "Failed to update order item status",
-        error: err.message,
-      });
+    return res.status(500).json({
+      message: "Failed to update order item status",
+      error: err.message,
+    });
   }
 }
 
