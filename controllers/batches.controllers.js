@@ -324,6 +324,7 @@ async function updateBatchStatus(req, res) {
   }
 }
 
+
 async function autoUpdateBatchStatus(batchId) {
   try {
     const batch = await prisma.batch.findUnique({
@@ -410,6 +411,7 @@ async function autoUpdateBatchStatus(batchId) {
     return null;
   }
 }
+
 
 module.exports = {
   createBatch,

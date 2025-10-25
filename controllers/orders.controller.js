@@ -2,7 +2,15 @@ const prisma = require("../prisma/client");
 
 async function listOrders(req, res) {
   try {
-    const { page = 1, limit = 20, storeId, status, search, startDate, endDate } = req.query;
+    const {
+      page = 1,
+      limit = 20,
+      storeId,
+      status,
+      search,
+      startDate,
+      endDate,
+    } = req.query;
 
     const take = parseInt(limit);
     const skip = (parseInt(page) - 1) * take;
@@ -12,7 +20,9 @@ async function listOrders(req, res) {
     // Role-based filtering
     if (req.session.role === "USER") {
       if (!req.session.storeId) {
-        return res.status(403).json({ error: "No store assigned to this user" });
+        return res
+          .status(403)
+          .json({ error: "No store assigned to this user" });
       }
       where.storeId = req.session.storeId;
     } else {
@@ -111,7 +121,6 @@ async function listOrders(req, res) {
     return res.status(500).send("Server error");
   }
 }
-
 
 async function getOrderDetails(req, res) {
   try {
@@ -284,4 +293,107 @@ function determineOverallStatus(batchProgress) {
 
   return "WAITING_BATCH";
 }
-module.exports = { listOrders, getOrderDetails };
+
+async function updateOrderItemStatus(req, res) {
+  try {
+    const { orderItemId } = req.params;
+    const { status } = req.body;
+
+    const validStatuses = [
+      "PENDING",
+      "WAITING_BATCH",
+      "BATCHED",
+      "DESIGNING",
+      "DESIGNED",
+      "PRINTING",
+      "PRINTED",
+      "CUTTING",
+      "CUT",
+      "FULFILLMENT",
+      "PACKED",
+      "COMPLETED",
+      "CANCELLED",
+    ];
+
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+
+    // ✅ Check if orderItem exists
+    const orderItem = await prisma.orderItem.findUnique({
+      where: { id: orderItemId },
+      include: {
+        order: true,
+        BatchItem: { include: { units: true, batch: true } },
+      },
+    });
+
+    if (!orderItem) {
+      return res.status(404).json({ message: "Order item not found" });
+    }
+
+    // ✅ Start transaction for atomic updates
+    const updated = await prisma.$transaction(async (tx) => {
+      // Update the order item status
+      const updatedItem = await tx.orderItem.update({
+        where: { id: orderItemId },
+        data: { status },
+      });
+
+      // If item has batch links, update related batch records
+      if (orderItem.BatchItem.length > 0) {
+        const batchItemIds = orderItem.BatchItem.map((bi) => bi.id);
+
+        await tx.batchItem.updateMany({
+          where: { id: { in: batchItemIds } },
+          data: { status },
+        });
+
+        await tx.batchItemUnit.updateMany({
+          where: { batchItemId: { in: batchItemIds } },
+          data: { status },
+        });
+
+        // Optionally: if all items in a batch reach same status → update the batch itself
+        const batchIds = [
+          ...new Set(orderItem.BatchItem.map((bi) => bi.batchId)),
+        ];
+
+        for (const batchId of batchIds) {
+          const allItems = await tx.batchItem.findMany({
+            where: { batchId },
+            select: { status: true },
+          });
+
+          const allSame = allItems.every((i) => i.status === status);
+          if (allSame) {
+            await tx.batch.update({
+              where: { id: batchId },
+              data: { status },
+            });
+          }
+        }
+      }
+
+      // ✅ Update the parent order's overall status based on all items
+      await updateOrderStatusFromItems(orderItem.orderId, tx);
+
+      return updatedItem;
+    });
+
+    return res.status(200).json({
+      message: `Order item status updated to ${status}`,
+      orderItem: updated,
+    });
+  } catch (err) {
+    console.error("❌ Error updating order item status:", err);
+    return res
+      .status(500)
+      .json({
+        message: "Failed to update order item status",
+        error: err.message,
+      });
+  }
+}
+
+module.exports = { listOrders, getOrderDetails, updateOrderItemStatus };
