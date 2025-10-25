@@ -245,13 +245,20 @@ async function scanUnitFulfillment(req, res) {
             BatchItem: {
               include: {
                 units: { select: { id: true, status: true } },
-                batch: { select: { id: true, name: true, status: true } }, // ✅ include batch here too
+                batch: { select: { id: true, name: true, status: true } },
               },
             },
           },
         },
       },
     });
+
+    const orderItemIds = updatedOrder.items.map((item) => ({
+      id: item.id,
+      productTitle: item.product.title,
+      variantTitle: item.variant?.title || null,
+      status: item.status,
+    }));
 
     // ✅ Return success response with batch name
     return res.json({
@@ -261,6 +268,7 @@ async function scanUnitFulfillment(req, res) {
         name: batch.name,
       },
       order: updatedOrder,
+      orderItemIds,
     });
   } catch (err) {
     console.error("❌ Fulfillment scan error:", err);
