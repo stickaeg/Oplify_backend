@@ -64,8 +64,10 @@ async function assignOrderItemsToBatches(orderItems) {
           : rule.name;
 
         const countForThisName = await prisma.batch.count({
-          where: { name: { startsWith: baseName } },
-          rules: { some: { storeId: product.storeId } }, 
+          where: {
+            name: { startsWith: baseName },
+            rules: { some: { storeId: product.storeId } },
+          },
         });
 
         const newBatchName =
