@@ -109,14 +109,22 @@ async function listRules(req, res) {
   try {
     const rules = await prisma.productTypeRule.findMany({
       orderBy: { createdAt: "desc" },
+      include: {
+        store: {
+          select: {
+            id: true,
+            name: true, // 👈 get the store name
+          },
+        },
+      },
     });
+
     return res.json(rules);
   } catch (err) {
     console.error(err);
     return res.status(500).send("server error");
   }
 }
-
 // Optional: Delete rule
 async function deleteRule(req, res) {
   try {
