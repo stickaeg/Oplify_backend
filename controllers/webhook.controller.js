@@ -163,7 +163,7 @@ async function handleOrderCreate(req, res) {
       return res.status(200).send("OK");
     }
 
-    // Create order with initial PENDING status
+    // Merge duplicate line items
     const mergedLineItems = Object.values(
       orderData.line_items.reduce((acc, item) => {
         const key = `${item.product_id}-${item.variant_id || "null"}`;
@@ -173,28 +173,44 @@ async function handleOrderCreate(req, res) {
       }, {})
     );
 
-    // Then use mergedLineItems instead of orderData.line_items
     const order = await prisma.order.create({
       data: {
         shopifyId: shopifyOrderId,
         orderNumber: orderData.order_number,
         storeId: store.id,
 
-        customerName: customer
-          ? `${customer.first_name || ""} ${customer.last_name || ""}`.trim()
+        // ✅ Access customer info directly and safely
+        customerName: orderData.customer
+          ? `${orderData.customer.first_name || ""} ${
+              orderData.customer.last_name || ""
+            }`.trim()
           : null,
-        customerEmail: customer.email || null,
-        customerPhone: customer.phone || address.phone || null,
+        customerEmail: orderData.customer?.email || null,
+        customerPhone:
+          orderData.customer?.phone ||
+          orderData.customer?.default_address?.phone ||
+          orderData.shipping_address?.phone ||
+          null,
 
-        address1: address.address1 || null,
-        address2: address.address2 || null,
-        province: address.province || null,
-
+        // ✅ Address from customer default_address or shipping_address
+        address1:
+          orderData.customer?.default_address?.address1 ||
+          orderData.shipping_address?.address1 ||
+          null,
+        address2:
+          orderData.customer?.default_address?.address2 ||
+          orderData.shipping_address?.address2 ||
+          null,
+        province:
+          orderData.customer?.default_address?.province ||
+          orderData.shipping_address?.province ||
+          null,
         totalPrice: orderData.current_total_price
           ? parseFloat(orderData.current_total_price)
           : null,
         status: "PENDING",
 
+        // ✅ Items creation
         items: {
           create: await Promise.all(
             mergedLineItems.map(async (item) => {
@@ -237,7 +253,8 @@ async function handleOrderCreate(req, res) {
       },
       include: { items: true },
     });
-    // Auto-assign to batch if batching rules exist
+
+    // Auto-assign to batch
     try {
       await assignOrderItemsToBatches(order.items);
       console.log("🧺 Items assigned to batches successfully");
