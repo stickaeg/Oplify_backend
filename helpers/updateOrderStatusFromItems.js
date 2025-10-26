@@ -34,7 +34,14 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
       where: { id: orderId },
       data: { status: "COMPLETED" },
     });
-    console.log(`✅ Order ${orderId} marked as COMPLETED`);
+    return;
+  }
+
+  if (allStatuses.every((s) => s === "CUT")) {
+    await tx.order.update({
+      where: { id: orderId },
+      data: { status: "FULFILLMENT" },
+    });
     return;
   }
 
@@ -44,7 +51,6 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
       where: { id: orderId },
       data: { status: "CANCELLED" },
     });
-    console.log(`❌ Order ${orderId} marked as CANCELLED`);
     return;
   }
 
