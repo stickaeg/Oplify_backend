@@ -29,19 +29,24 @@ enum Role {
 }
 
 model Order {
-  id            String      @id @default(cuid())
-  shopifyId     String
-  storeId       String
-  store         Store       @relation(fields: [storeId], references: [id])
-  orderNumber   Int?
-  customerName  String?
-  customerEmail String?
-  totalPrice    Float?
-  status        Status      @default(PENDING)
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  id             String      @id @default(cuid())
+  shopifyId      String
+  storeId        String
+  store          Store       @relation(fields: [storeId], references: [id])
+  orderNumber    Int?
+  customerName   String?
+  customerEmail  String?
+  customerPhone  String?
+  address1       String?
+  address2       String?
+  province       String?
+  totalPrice     Float?
+  status         Status      @default(PENDING)
 
-  items         OrderItem[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  items          OrderItem[]
 
   @@unique([shopifyId, storeId])
   @@index([status])

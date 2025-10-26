@@ -179,12 +179,17 @@ async function handleOrderCreate(req, res) {
         shopifyId: shopifyOrderId,
         orderNumber: orderData.order_number,
         storeId: store.id,
-        customerName: orderData.customer
-          ? `${orderData.customer.first_name || ""} ${
-              orderData.customer.last_name || ""
-            }`.trim()
+
+        customerName: customer
+          ? `${customer.first_name || ""} ${customer.last_name || ""}`.trim()
           : null,
-        customerEmail: orderData.customer?.email || null,
+        customerEmail: customer.email || null,
+        customerPhone: customer.phone || address.phone || null,
+
+        address1: address.address1 || null,
+        address2: address.address2 || null,
+        province: address.province || null,
+
         totalPrice: orderData.current_total_price
           ? parseFloat(orderData.current_total_price)
           : null,
