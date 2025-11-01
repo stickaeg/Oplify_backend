@@ -31,12 +31,10 @@ async function createBatch(req, res) {
 
     const baseName = batchName.trim();
 
+    // ✅ Count all batches with this name (across all stores)
     const countForThisName = await prisma.batch.count({
       where: {
-        AND: [
-          { name: { startsWith: baseName } },
-          { rules: { some: { storeId: product.storeId } } },
-        ],
+        name: { startsWith: baseName },
       },
     });
 
@@ -324,7 +322,6 @@ async function updateBatchStatus(req, res) {
   }
 }
 
-
 async function autoUpdateBatchStatus(batchId) {
   try {
     const batch = await prisma.batch.findUnique({
@@ -411,7 +408,6 @@ async function autoUpdateBatchStatus(batchId) {
     return null;
   }
 }
-
 
 module.exports = {
   createBatch,
