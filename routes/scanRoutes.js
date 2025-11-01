@@ -7,6 +7,7 @@ const {
 } = require("../controllers/scan.controllers");
 const prisma = require("../prisma/client");
 const { fulfillOrder } = require("../services/shopifyServices");
+const { decrypt } = require("../lib/crypto");
 
 // Batch QR scan (Printer)
 router.get("/batch/:token", scanBatch);
@@ -21,36 +22,27 @@ router.post("/manualFulfill/:orderId", async (req, res) => {
       include: { store: true },
     });
 
-    // ✅ Check if order exists
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
     }
 
-    // ✅ Check if store exists
     if (!order.store) {
       return res.status(400).json({ error: "Store not found for order" });
     }
 
-    // ✅ Check if required fields exist
-    if (
-      !order.store.shopDomain ||
-      !order.store.accessToken ||
-      !order.shopifyId
-    ) {
+    // ✅ DECRYPT the access token
+    const decryptedToken = decrypt(order.store.accessToken);
+
+    if (!order.store.shopDomain || !decryptedToken || !order.shopifyId) {
       return res.status(400).json({
         error: "Missing required store or order data",
-        details: {
-          shopDomain: !!order.store.shopDomain,
-          accessToken: !!order.store.accessToken,
-          shopifyId: !!order.shopifyId,
-        },
       });
     }
 
-    // ✅ Now safe to fulfill
+    // ✅ Use decrypted token
     await fulfillOrder(
       order.store.shopDomain,
-      order.store.accessToken,
+      decryptedToken, // ← Decrypted!
       order.shopifyId
     );
 
@@ -59,5 +51,4 @@ router.post("/manualFulfill/:orderId", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 module.exports = router;
