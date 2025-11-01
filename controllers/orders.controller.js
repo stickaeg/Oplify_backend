@@ -40,27 +40,43 @@ async function listOrders(req, res) {
       where.createdAt = {};
       if (startDate) where.createdAt.gte = new Date(startDate);
       if (endDate) {
-        // Include all orders up to end of day
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
         where.createdAt.lte = end;
       }
     }
 
-    // ✅ Optional search filter (by order number only)
+    // ✅ Optional search filter (order number, phone, name, email)
     if (search) {
-      const orderNumber = parseInt(search.trim());
-      if (!isNaN(orderNumber)) {
-        where.orderNumber = orderNumber;
+      const searchTerm = search.trim();
+
+      if (!isNaN(searchTerm)) {
+        const phoneVariants = [];
+
+        // Handle Egyptian phone formats (010... and +2010...)
+        if (searchTerm.startsWith("0")) {
+          phoneVariants.push(searchTerm); // local
+          phoneVariants.push("+2" + searchTerm); // +2010...
+          phoneVariants.push("+20" + searchTerm.slice(1)); // +2010...
+        } else if (searchTerm.startsWith("+20")) {
+          phoneVariants.push(searchTerm); // +2010...
+          phoneVariants.push("0" + searchTerm.slice(3)); // 010...
+        } else if (searchTerm.startsWith("20")) {
+          phoneVariants.push("+" + searchTerm); // +2010...
+          phoneVariants.push("0" + searchTerm.slice(2)); // 010...
+        }
+
+        where.OR = [
+          { orderNumber: parseInt(searchTerm) },
+          ...phoneVariants.map((p) => ({
+            customerPhone: { contains: p },
+          })),
+        ];
       } else {
-        // Invalid search (not a number) → return empty result
-        return res.json({
-          page: parseInt(page),
-          limit: take,
-          total: 0,
-          pages: 0,
-          data: [],
-        });
+        where.OR = [
+          { customerName: { contains: searchTerm, mode: "insensitive" } },
+          { customerEmail: { contains: searchTerm, mode: "insensitive" } },
+        ];
       }
     }
 
@@ -78,6 +94,7 @@ async function listOrders(req, res) {
           storeId: true,
           customerName: true,
           customerEmail: true,
+          customerPhone: true,
           totalPrice: true,
           status: true,
           createdAt: true,
@@ -122,6 +139,7 @@ async function listOrders(req, res) {
     return res.status(500).send("Server error");
   }
 }
+
 
 async function getOrderDetails(req, res) {
   try {
