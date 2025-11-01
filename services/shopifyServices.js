@@ -186,10 +186,118 @@ async function createOrderWebhook(shopDomain, accessToken, callbackUrl) {
   );
 }
 
+// ✅ NEW: Query to get fulfillment orders for an order
+const GET_FULFILLMENT_ORDERS_QUERY = `
+  query getFulfillmentOrders($orderId: ID!) {
+    order(id: $orderId) {
+      id
+      fulfillmentOrders(first: 10) {
+        edges {
+          node {
+            id
+            status
+          }
+        }
+      }
+    }
+  }
+`;
+
+// ✅ NEW: Mutation to create a fulfillment
+const FULFILL_ORDER_MUTATION = `
+  mutation fulfillmentCreateV2($fulfillment: FulfillmentV2Input!) {
+    fulfillmentCreateV2(fulfillment: $fulfillment) {
+      fulfillment {
+        id
+        status
+        createdAt
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+// ✅ NEW: Function to fulfill an order in Shopify
+async function fulfillOrder(shopDomain, accessToken, shopifyOrderId) {
+  try {
+    console.log(`🔍 Getting fulfillment orders for ${shopifyOrderId}...`);
+
+    // Step 1: Get the fulfillment order IDs
+    const orderData = await graphqlRequest(
+      shopDomain,
+      accessToken,
+      GET_FULFILLMENT_ORDERS_QUERY,
+      { orderId: shopifyOrderId }
+    );
+
+    if (!orderData.order) {
+      throw new Error(`Order ${shopifyOrderId} not found in Shopify`);
+    }
+
+    // Step 2: Filter for OPEN fulfillment orders (ones that can be fulfilled)
+    const fulfillmentOrders = orderData.order.fulfillmentOrders.edges
+      .map((e) => e.node)
+      .filter((fo) => fo.status === "OPEN");
+
+    if (fulfillmentOrders.length === 0) {
+      console.log(
+        "⚠️ No fulfillment orders to fulfill (may already be fulfilled)"
+      );
+      return null;
+    }
+
+    console.log(
+      `📋 Found ${fulfillmentOrders.length} fulfillment order(s) to fulfill`
+    );
+
+    // Step 3: Prepare fulfillment input
+    const lineItemsByFulfillmentOrder = fulfillmentOrders.map((fo) => ({
+      fulfillmentOrderId: fo.id,
+    }));
+
+    const fulfillmentInput = {
+      lineItemsByFulfillmentOrder,
+      notifyCustomer: true, // Send email to customer
+    };
+
+    console.log(`📤 Creating fulfillment in Shopify...`);
+
+    // Step 4: Create the fulfillment
+    const result = await graphqlRequest(
+      shopDomain,
+      accessToken,
+      FULFILL_ORDER_MUTATION,
+      { fulfillment: fulfillmentInput }
+    );
+
+    if (result.fulfillmentCreateV2.userErrors.length > 0) {
+      console.error(
+        "❌ Shopify fulfillment errors:",
+        result.fulfillmentCreateV2.userErrors
+      );
+      throw new Error(JSON.stringify(result.fulfillmentCreateV2.userErrors));
+    }
+
+    const fulfillment = result.fulfillmentCreateV2.fulfillment;
+    console.log(
+      `✅ Fulfillment created! ID: ${fulfillment.id}, Status: ${fulfillment.status}`
+    );
+
+    return fulfillment;
+  } catch (err) {
+    console.error("❌ Error fulfilling order:", err?.message || err);
+    throw err;
+  }
+}
+
 module.exports = {
   fetchAllProductsGraphql,
   graphqlRequest,
   createWebhook,
   deleteOldWebhooks,
   createOrderWebhook,
+  fulfillOrder, // ✅ NEW export
 };

@@ -135,8 +135,6 @@ async function handleOrderCreate(req, res) {
         ? JSON.parse(req.body.toString())
         : req.body;
 
-    console.log("👤 Customer data:", orderData.customer);
-
     const shopDomain = req.headers["x-shopify-shop-domain"];
     if (!shopDomain) return res.status(400).send("Missing shop domain");
 

@@ -1,4 +1,5 @@
 const prisma = require("../prisma/client");
+const { fulfillOrder } = require("../services/shopifyServices");
 
 async function updateOrderStatusFromItems(orderId, tx = prisma) {
   // 🧩 Load order and all related item-unit statuses through BatchItem
@@ -16,6 +17,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
           },
         },
       },
+      store: true, // ✅ Include store to get shopDomain and accessToken
     },
   });
 
@@ -34,6 +36,23 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
       where: { id: orderId },
       data: { status: "COMPLETED" },
     });
+
+    // ✅ Fulfill the order in Shopify
+    console.log(`📦 Order ${orderId} completed, fulfilling in Shopify...`);
+    try {
+      await fulfillOrder(
+        order.store.shopDomain,
+        order.store.accessToken,
+        order.shopifyId
+      );
+      console.log(`✅ Shopify fulfillment created for order ${orderId}`);
+    } catch (err) {
+      console.error(
+        `❌ Failed to fulfill order in Shopify for order ${orderId}:`,
+        err.message
+      );
+      // Don't throw - we still want the local status updated even if Shopify fails
+    }
     return;
   }
 
