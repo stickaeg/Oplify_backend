@@ -16,7 +16,7 @@ router.get("/item-fulfillment/:token", scanUnitFulfillment);
 
 router.post("/manualFulfill/:orderId", async (req, res) => {
   const order = await prisma.order.findUnique({
-    where: { id: parseInt(req.params.orderId) },
+    where: { id: req.params.orderId },
     include: { store: true },
   });
 
