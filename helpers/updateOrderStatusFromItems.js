@@ -40,6 +40,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
 
     // ✅ Fulfill the order in Shopify
     console.log(`📦 Order ${orderId} completed, fulfilling in Shopify...`);
+    
     const decryptedToken = decrypt(order.store.accessToken);
 
     try {

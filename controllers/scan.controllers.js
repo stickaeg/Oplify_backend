@@ -185,7 +185,6 @@ async function scanUnitFulfillment(req, res) {
     const orderItem = batchItem.orderItem;
     const order = orderItem.order;
 
-    // ✅ If it's already packed, just return the current order instead of error
     if (unit.status === "PACKED") {
       const currentOrder = await prisma.order.findUnique({
         where: { id: order.id },
@@ -212,7 +211,6 @@ async function scanUnitFulfillment(req, res) {
       });
     }
 
-    // ✅ Only block if it's in an invalid state
     if (unit.status !== "CUT")
       return res.status(400).json({ error: "Unit must be CUT before packing" });
 
@@ -251,6 +249,9 @@ async function scanUnitFulfillment(req, res) {
           where: { id: order.id },
           data: { status: "COMPLETED" },
         });
+
+        // ✅ Call updateOrderStatusFromItems AFTER order is COMPLETED
+        await updateOrderStatusFromItems(order.id, tx);
       }
     });
 
