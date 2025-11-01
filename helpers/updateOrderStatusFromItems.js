@@ -1,3 +1,4 @@
+const { decrypt } = require("../lib/crypto");
 const prisma = require("../prisma/client");
 const { fulfillOrder } = require("../services/shopifyServices");
 
@@ -39,10 +40,12 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
 
     // ✅ Fulfill the order in Shopify
     console.log(`📦 Order ${orderId} completed, fulfilling in Shopify...`);
+    const decryptedToken = decrypt(order.store.accessToken);
+
     try {
       await fulfillOrder(
         order.store.shopDomain,
-        order.store.accessToken,
+        decryptedToken, // ← Decrypted
         order.shopifyId
       );
       console.log(`✅ Shopify fulfillment created for order ${orderId}`);
