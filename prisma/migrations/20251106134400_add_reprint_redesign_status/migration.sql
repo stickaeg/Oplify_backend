@@ -1,0 +1,3 @@
+-- AlterEnum
+ALTER TYPE "Status" ADD VALUE 'REPRINT';
+ALTER TYPE "Status" ADD VALUE 'REDESIGN';
