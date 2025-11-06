@@ -233,6 +233,8 @@ async function updateBatchStatus(req, res) {
       "PRINTING",
       "PRINTED",
       "CUTTING",
+      "REPRINT",
+      "REDESIGN",
       "CUT",
       "FULFILLMENT",
       "PACKED",
