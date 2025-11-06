@@ -148,7 +148,8 @@ model ProductTypeRule {
 
 
   batches   Batch[] @relation("BatchRules")
-  
+
+@@unique([name, storeId])
 
 }
 
