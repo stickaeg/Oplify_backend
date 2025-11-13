@@ -18,16 +18,27 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
           },
         },
       },
-      store: true, // ✅ Include store to get shopDomain and accessToken
+      store: true,
     },
   });
 
   if (!order || !order.items.length) return;
 
-  // 🧮 Flatten all statuses from all batch item units
-  const allStatuses = order.items.flatMap((item) =>
-    item.BatchItem.flatMap((bi) => bi.units.map((u) => u.status))
-  );
+  // 🧮 Collect all relevant statuses
+  const allStatuses = [];
+
+  for (const item of order.items) {
+    if (item.BatchItem && item.BatchItem.length > 0) {
+      // ✅ If item has batches, use unit statuses
+      const unitStatuses = item.BatchItem.flatMap((bi) =>
+        bi.units.map((u) => u.status)
+      );
+      allStatuses.push(...unitStatuses);
+    } else {
+      // ✅ If no batches, use the OrderItem status directly
+      allStatuses.push(item.status);
+    }
+  }
 
   if (allStatuses.length === 0) return;
 
@@ -40,13 +51,13 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
 
     // ✅ Fulfill the order in Shopify
     console.log(`📦 Order ${orderId} completed, fulfilling in Shopify...`);
-    
+
     const decryptedToken = decrypt(order.store.accessToken);
 
     try {
       await fulfillOrder(
         order.store.shopDomain,
-        decryptedToken, // ← Decrypted
+        decryptedToken,
         order.shopifyId
       );
       console.log(`✅ Shopify fulfillment created for order ${orderId}`);
@@ -60,6 +71,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     return;
   }
 
+  // ✅ All CUT → FULFILLMENT
   if (allStatuses.every((s) => s === "CUT")) {
     await tx.order.update({
       where: { id: orderId },

@@ -214,6 +214,15 @@ async function scanUnitFulfillment(req, res) {
     if (unit.status !== "CUT")
       return res.status(400).json({ error: "Unit must be CUT before packing" });
 
+    if (unit.status === "CANCELLED") {
+      return res.status(400).json({
+        error:
+          "This unit has been cancelled/replaced. Scan the replacement unit instead.",
+        unitId: unit.id,
+        batchName: unit.batchItem.batch.name,
+      });
+    }
+
     // ✅ Transaction for status update
     await prisma.$transaction(async (tx) => {
       await tx.batchItemUnit.update({

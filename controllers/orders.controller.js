@@ -1,5 +1,7 @@
+const { createReplacementUnit } = require("../helpers/batchHelper");
 const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 const prisma = require("../prisma/client");
+const { autoUpdateBatchStatus } = require("./batches.controllers");
 
 async function listOrders(req, res) {
   try {
@@ -163,7 +165,7 @@ async function getOrderDetails(req, res) {
         address1: true,
         address2: true,
         province: true,
-        totalPrice: true, // ✅ Removed duplicate
+        totalPrice: true,
         status: true,
         createdAt: true,
         updatedAt: true,
@@ -195,8 +197,8 @@ async function getOrderDetails(req, res) {
                     qrCodeUrl: true,
                     qrCodeToken: true,
                   },
+                  orderBy: { id: "asc" }, // ✅ Add stable ordering by ID
                 },
-                // ✅ Add batch include with rules
                 batch: {
                   select: {
                     id: true,
@@ -211,8 +213,10 @@ async function getOrderDetails(req, res) {
                   },
                 },
               },
+              orderBy: { id: "asc" }, // ✅ Also order BatchItems consistently
             },
           },
+          orderBy: { id: "asc" }, // ✅ Order items consistently too
         },
         store: {
           select: { id: true, name: true, shopDomain: true },
@@ -327,7 +331,7 @@ function determineOverallStatus(batchProgress) {
 async function updateOrderItemStatus(req, res) {
   try {
     const { orderItemId } = req.params;
-    const { status, unitId } = req.body; // ✅ Accept optional unitId
+    const { status, unitIds } = req.body; // ✅ Accept array of unitIds
 
     const validStatuses = [
       "PENDING",
@@ -361,108 +365,97 @@ async function updateOrderItemStatus(req, res) {
       return res.status(404).json({ message: "Order item not found" });
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
-      // ✅ If updating specific unit
-      if (unitId) {
-        const unit = await tx.batchItemUnit.findUnique({
-          where: { id: unitId },
-          include: { batchItem: true },
-        });
-
-        if (!unit) {
-          throw new Error("Unit not found");
-        }
-
-        // Update the individual unit
-        await tx.batchItemUnit.update({
-          where: { id: unitId },
+    await prisma.$transaction(async (tx) => {
+      // ✅ Update specific units (partial fulfillment)
+      if (unitIds && Array.isArray(unitIds) && unitIds.length > 0) {
+        await tx.batchItemUnit.updateMany({
+          where: {
+            id: { in: unitIds },
+            batchItem: { orderItemId },
+          },
           data: { status },
         });
 
-        // Check if all units in this batchItem have same status
-        const batchItem = unit.batchItem;
+        // Recalculate BatchItem statuses based on their units
+        const affectedBatchItems = await tx.batchItem.findMany({
+          where: { orderItemId },
+          include: { units: true },
+        });
+
+        for (const batchItem of affectedBatchItems) {
+          const unitStatuses = batchItem.units.map((u) => u.status);
+          const derivedStatus = deriveStatusFromUnits(unitStatuses);
+
+          await tx.batchItem.update({
+            where: { id: batchItem.id },
+            data: { status: derivedStatus },
+          });
+        }
+
+        // Recalculate OrderItem status
         const allUnits = await tx.batchItemUnit.findMany({
-          where: { batchItemId: batchItem.id },
+          where: {
+            batchItem: { orderItemId },
+          },
           select: { status: true },
         });
 
-        const allSame = allUnits.every((u) => u.status === status);
-        if (allSame) {
-          // Update batchItem if all its units are same status
-          await tx.batchItem.update({
-            where: { id: batchItem.id },
-            data: { status },
-          });
+        const orderItemStatus = deriveStatusFromUnits(
+          allUnits.map((u) => u.status)
+        );
 
-          // Check if all batchItems in batch have same status
-          const batch = await tx.batch.findUnique({
-            where: { id: batchItem.batchId },
-            include: { items: true },
-          });
-
-          const batchItems = await tx.batchItem.findMany({
-            where: { batchId: batch.id },
-            select: { status: true },
-          });
-
-          const batchAllSame = batchItems.every((bi) => bi.status === status);
-          if (batchAllSame) {
-            await tx.batch.update({
-              where: { id: batch.id },
-              data: { status },
-            });
-          }
-        }
-      } else {
-        // ✅ Bulk update entire OrderItem (all units)
-        const updatedItem = await tx.orderItem.update({
+        await tx.orderItem.update({
           where: { id: orderItemId },
+          data: { status: orderItemStatus },
+        });
+      } else {
+        // ✅ Bulk update all units
+        const batchItemIds = orderItem.BatchItem.map((bi) => bi.id);
+
+        await tx.batchItemUnit.updateMany({
+          where: { batchItemId: { in: batchItemIds } },
           data: { status },
         });
 
-        if (orderItem.BatchItem.length > 0) {
-          const batchItemIds = orderItem.BatchItem.map((bi) => bi.id);
+        await tx.batchItem.updateMany({
+          where: { id: { in: batchItemIds } },
+          data: { status },
+        });
 
-          // Update all units in all batchItems
-          await tx.batchItemUnit.updateMany({
-            where: { batchItemId: { in: batchItemIds } },
-            data: { status },
-          });
+        await tx.orderItem.update({
+          where: { id: orderItemId },
+          data: { status },
+        });
+      }
 
-          // Update all batchItems
-          await tx.batchItem.updateMany({
-            where: { id: { in: batchItemIds } },
-            data: { status },
-          });
+      // Update batch statuses
+      const batchIds = [
+        ...new Set(orderItem.BatchItem.map((bi) => bi.batchId)),
+      ];
 
-          // Update batches if all items same status
-          const batchIds = [
-            ...new Set(orderItem.BatchItem.map((bi) => bi.batchId)),
-          ];
+      for (const batchId of batchIds) {
+        const batchItems = await tx.batchItem.findMany({
+          where: { batchId },
+          include: { units: true },
+        });
 
-          for (const batchId of batchIds) {
-            const allItems = await tx.batchItem.findMany({
-              where: { batchId },
-              select: { status: true },
-            });
+        const allUnitStatuses = batchItems.flatMap((bi) =>
+          bi.units.map((u) => u.status)
+        );
 
-            const allSame = allItems.every((i) => i.status === status);
-            if (allSame) {
-              await tx.batch.update({
-                where: { id: batchId },
-                data: { status },
-              });
-            }
-          }
-        }
+        const batchStatus = deriveStatusFromUnits(allUnitStatuses);
+
+        await tx.batch.update({
+          where: { id: batchId },
+          data: { status: batchStatus },
+        });
       }
 
       await updateOrderStatusFromItems(orderItem.orderId, tx);
-      return orderItem;
     });
 
     const updatedOrder = await prisma.order.findUnique({
-      where: { id: updated.orderId },
+      where: { id: orderItem.orderId },
       include: {
         store: { select: { id: true, name: true, shopDomain: true } },
         items: {
@@ -500,4 +493,80 @@ async function updateOrderItemStatus(req, res) {
   }
 }
 
-module.exports = { listOrders, getOrderDetails, updateOrderItemStatus };
+function deriveStatusFromUnits(statuses) {
+  if (!statuses.length) return "WAITING_BATCH";
+
+  const uniqueStatuses = [...new Set(statuses)];
+
+  // If all units same status, return that
+  if (uniqueStatuses.length === 1) {
+    return uniqueStatuses[0];
+  }
+
+  // Priority: most advanced status wins
+  const statusPriority = [
+    "COMPLETED",
+    "PACKED",
+    "FULFILLMENT",
+    "CUT",
+    "CUTTING",
+    "PRINTED",
+    "PRINTING",
+    "DESIGNED",
+    "DESIGNING",
+    "BATCHED",
+    "WAITING_BATCH",
+    "PENDING",
+    "CANCELLED",
+  ];
+
+  for (const status of statusPriority) {
+    if (statuses.includes(status)) return status;
+  }
+
+  return "WAITING_BATCH";
+}
+
+async function replaceUnit(req, res) {
+  try {
+    const { unitId } = req.params;
+    const { reason } = req.body; // "REDESIGN" or "REPRINT"
+
+    if (!["REDESIGN", "REPRINT"].includes(reason)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid reason. Use REDESIGN or REPRINT" });
+    }
+
+    // Check authorization
+    if (!["ADMIN", "DESIGNER", "PRINTER"].includes(req.session.role)) {
+      return res
+        .status(403)
+        .json({ error: "Insufficient permissions to replace units" });
+    }
+
+    const result = await createReplacementUnit(unitId, reason);
+
+    // Auto-update both batch statuses
+    await autoUpdateBatchStatus(result.oldBatch.id);
+    await autoUpdateBatchStatus(result.newBatch.id);
+
+    return res.status(200).json({
+      message: `Replacement unit created for ${reason}`,
+      ...result,
+    });
+  } catch (err) {
+    console.error("Error creating replacement:", err);
+    return res.status(500).json({
+      message: "Failed to create replacement unit",
+      error: err.message,
+    });
+  }
+}
+
+module.exports = {
+  listOrders,
+  getOrderDetails,
+  updateOrderItemStatus,
+  replaceUnit,
+};

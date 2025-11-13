@@ -1,6 +1,8 @@
-const { autoUpdateBatchStatus } = require("../controllers/batches.controllers");
-const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 const prisma = require("../prisma/client");
+const crypto = require("crypto");
+const QRCode = require("qrcode");
+const { autoUpdateBatchStatus } = require("../controllers/batches.controllers");
+const updateOrderStatusFromItems = require("./updateOrderStatusFromItems");
 
 async function assignOrderItemsToBatches(orderItems) {
   for (const item of orderItems) {
@@ -148,5 +150,224 @@ async function assignOrderItemsToBatches(orderItems) {
     }
   }
 }
+async function createReplacementUnit(unitId, reason = "REDESIGN") {
+  return await prisma.$transaction(async (tx) => {
+    // 1️⃣ Get the corrupted unit
+    const corruptedUnit = await tx.batchItemUnit.findUnique({
+      where: { id: unitId },
+      include: {
+        batchItem: {
+          include: {
+            batch: true,
+            orderItem: {
+              include: {
+                product: { include: { store: true } },
+              },
+            },
+          },
+        },
+      },
+    });
 
-module.exports = { assignOrderItemsToBatches };
+    if (!corruptedUnit) {
+      throw new Error(`Unit ${unitId} not found`);
+    }
+
+    const oldBatch = corruptedUnit.batchItem.batch;
+    const orderItem = corruptedUnit.batchItem.orderItem;
+    const product = orderItem.product;
+
+    console.log(
+      `🔄 Creating replacement for unit ${unitId} (Reason: ${reason})`
+    );
+
+    // 2️⃣ Mark the corrupted unit as CANCELLED
+    await tx.batchItemUnit.update({
+      where: { id: unitId },
+      data: { status: "CANCELLED" },
+    });
+
+    // 3️⃣ Get product rule
+    const rule = await tx.productTypeRule.findFirst({
+      where: {
+        name: { equals: product.productType, mode: "insensitive" },
+        isPod: true,
+        storeId: product.storeId,
+      },
+    });
+
+    if (!rule) {
+      throw new Error(`No rule found for product type: ${product.productType}`);
+    }
+
+    // 4️⃣ Find or create target batch
+    let targetBatch = await tx.batch.findFirst({
+      where: {
+        rules: { some: { id: rule.id } },
+        capacity: { lt: tx.batch.fields.maxCapacity },
+        status: { in: ["PENDING", "WAITING_BATCH"] },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    if (!targetBatch) {
+      const lastBatch = await tx.batch.findFirst({
+        where: { rules: { some: { id: rule.id } } },
+        orderBy: { createdAt: "desc" },
+      });
+
+      const baseName = lastBatch
+        ? lastBatch.name.split(" - Batch #")[0]
+        : rule.name;
+
+      const countForThisName = await tx.batch.count({
+        where: {
+          name: { startsWith: baseName },
+          rules: { some: { storeId: product.storeId } },
+        },
+      });
+
+      const newBatchName =
+        countForThisName === 0
+          ? baseName
+          : `${baseName} - Batch #${countForThisName + 1}`;
+
+      targetBatch = await tx.batch.create({
+        data: {
+          name: newBatchName,
+          maxCapacity: lastBatch?.maxCapacity || 10,
+          capacity: 0,
+          status: "PENDING",
+          rules: { connect: [{ id: rule.id }] },
+        },
+      });
+
+      console.log(`🆕 Created new batch: ${targetBatch.name}`);
+    }
+
+    // 5️⃣ Find or create BatchItem in target batch
+    let targetBatchItem = await tx.batchItem.findFirst({
+      where: {
+        batchId: targetBatch.id,
+        orderItemId: orderItem.id,
+      },
+    });
+
+    if (!targetBatchItem) {
+      targetBatchItem = await tx.batchItem.create({
+        data: {
+          batchId: targetBatch.id,
+          orderItemId: orderItem.id,
+          quantity: 0,
+          status: "WAITING_BATCH",
+        },
+      });
+    }
+
+    // 6️⃣ Generate new QR token (simple version)
+    const newToken = crypto.randomBytes(8).toString("hex");
+
+    // 7️⃣ Create NEW replacement unit
+    const newUnit = await tx.batchItemUnit.create({
+      data: {
+        batchItemId: targetBatchItem.id,
+        status: "WAITING_BATCH",
+        qrCodeToken: newToken,
+        // qrCodeUrl will be generated separately if needed
+      },
+    });
+
+    // 8️⃣ Update quantities
+    await tx.batchItem.update({
+      where: { id: targetBatchItem.id },
+      data: { quantity: { increment: 1 } },
+    });
+
+    await tx.batch.update({
+      where: { id: targetBatch.id },
+      data: { capacity: { increment: 1 } },
+    });
+
+    // 9️⃣ Recalculate old BatchItem status
+    const oldBatchItemUnits = await tx.batchItemUnit.findMany({
+      where: { batchItemId: corruptedUnit.batchItemId },
+      select: { status: true },
+    });
+
+    const oldBatchItemStatus = deriveStatusFromUnits(
+      oldBatchItemUnits.map((u) => u.status)
+    );
+
+    await tx.batchItem.update({
+      where: { id: corruptedUnit.batchItemId },
+      data: { status: oldBatchItemStatus },
+    });
+
+    // 🔟 Recalculate OrderItem status (exclude cancelled)
+    const allOrderItemUnits = await tx.batchItemUnit.findMany({
+      where: {
+        batchItem: { orderItemId: orderItem.id },
+        status: { not: "CANCELLED" },
+      },
+      select: { status: true },
+    });
+
+    const orderItemStatus = deriveStatusFromUnits(
+      allOrderItemUnits.map((u) => u.status)
+    );
+
+    await tx.orderItem.update({
+      where: { id: orderItem.id },
+      data: { status: orderItemStatus },
+    });
+
+    // 1️⃣1️⃣ Update Order status
+    await updateOrderStatusFromItems(orderItem.orderId, tx);
+
+    console.log(
+      `✅ Replacement unit ${newUnit.id} created in ${targetBatch.name}`
+    );
+
+    return {
+      corruptedUnitId: unitId,
+      newUnitId: newUnit.id,
+      newUnitQRToken: newToken,
+      oldBatch: { id: oldBatch.id, name: oldBatch.name },
+      newBatch: { id: targetBatch.id, name: targetBatch.name },
+      reason,
+    };
+  });
+}
+
+function deriveStatusFromUnits(statuses) {
+  if (!statuses.length) return "WAITING_BATCH";
+
+  const uniqueStatuses = [...new Set(statuses)];
+  if (uniqueStatuses.length === 1) return uniqueStatuses[0];
+
+  const statusPriority = [
+    "COMPLETED",
+    "PACKED",
+    "FULFILLMENT",
+    "CUT",
+    "CUTTING",
+    "PRINTED",
+    "PRINTING",
+    "DESIGNED",
+    "DESIGNING",
+    "BATCHED",
+    "WAITING_BATCH",
+    "REDESIGN",
+    "REPRINT",
+    "PENDING",
+    "CANCELLED",
+  ];
+
+  for (const status of statusPriority) {
+    if (statuses.includes(status)) return status;
+  }
+
+  return "WAITING_BATCH";
+}
+
+module.exports = { assignOrderItemsToBatches, createReplacementUnit };

@@ -1,4 +1,3 @@
-// helpers/generateBatchQRCodes.js
 const QRCode = require("qrcode");
 const prisma = require("../prisma/client");
 const crypto = require("crypto");
