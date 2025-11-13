@@ -171,6 +171,9 @@ async function handleOrderCreate(req, res) {
       }, {})
     );
 
+    console.log("Order Info:" , orderData)
+    console.log("Customer Info:" , orderData.customer)
+
     const order = await prisma.order.create({
       data: {
         shopifyId: shopifyOrderId,
