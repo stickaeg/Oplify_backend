@@ -40,4 +40,6 @@ router.get("/dashboard/totalOrders", getTotalOrders);
 // Total product types sold (optionally ?storeId=...)
 router.get("/dashboard/totalProductTypesSold", getTotalProductTypesSold);
 
+
+
 module.exports = router;

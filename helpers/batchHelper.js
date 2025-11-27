@@ -20,8 +20,10 @@ async function assignOrderItemsToBatches(orderItems) {
       where: { id: item.productId },
     });
 
-    if (!product || !product.isPod || !product.productType) {
-      console.log(`🚫 Skipping item ${item.id}: not POD or missing type`);
+    if (!product || !product.productType) {
+      console.log(
+        `🚫 Skipping item ${item.id}: missing product or productType`
+      );
       continue;
     }
 
@@ -29,7 +31,6 @@ async function assignOrderItemsToBatches(orderItems) {
     const rule = await prisma.productTypeRule.findFirst({
       where: {
         name: { equals: product.productType, mode: "insensitive" },
-        isPod: true,
         storeId: product.storeId,
       },
     });
@@ -41,20 +42,34 @@ async function assignOrderItemsToBatches(orderItems) {
       continue;
     }
 
+    // 4️⃣ Determine if batch should handle stock based on product rule
+    const needsStockHandling = rule.requiresStock === true;
+    const isPod = rule.isPod === true;
+
+    // Skip if product is neither POD nor requires stock (no batch needed)
+    if (!isPod && !needsStockHandling) {
+      console.log(
+        `🚫 Skipping item ${item.id}: neither POD nor stock required`
+      );
+      continue;
+    }
+
     let remainingQuantity = item.quantity;
 
     while (remainingQuantity > 0) {
-      // 4️⃣ Find existing batches for this rule
+      // 5️⃣ Find existing batches for this rule matching stock handling flag
       const batches = await prisma.batch.findMany({
         where: {
-          rules: { some: { id: rule.id, storeId: product.storeId } }, // 👈 ensure same store
+          rules: { some: { id: rule.id, storeId: product.storeId } },
+          handlesStock: needsStockHandling,
         },
         orderBy: { createdAt: "asc" },
       });
-      // Find one with available space
+
+      // Find batch with available space
       let availableBatch = batches.find((b) => b.capacity < b.maxCapacity);
 
-      // 5️⃣ If no suitable batch exists, create a new one
+      // 6️⃣ If no suitable batch exists, create a new one
       if (!availableBatch) {
         const lastBatch = await prisma.batch.findFirst({
           where: { rules: { some: { id: rule.id } } },
@@ -80,9 +95,10 @@ async function assignOrderItemsToBatches(orderItems) {
         availableBatch = await prisma.batch.create({
           data: {
             name: newBatchName,
-            maxCapacity: lastBatch?.maxCapacity || 10, // fallback if null
+            maxCapacity: lastBatch?.maxCapacity || 10,
             capacity: 0,
             status: "PENDING",
+            handlesStock: needsStockHandling,
             rules: { connect: [{ id: rule.id }] },
           },
         });
@@ -90,20 +106,19 @@ async function assignOrderItemsToBatches(orderItems) {
         console.log(`🆕 Created new batch: ${availableBatch.name}`);
       }
 
-      // 6️⃣ Determine how many units to add
+      // 7️⃣ Determine how many units to add
       const availableSpace =
         availableBatch.maxCapacity - availableBatch.capacity;
       const quantityToAdd = Math.min(remainingQuantity, availableSpace);
 
-      // 7️⃣ Get orderId for later update
+      // 8️⃣ Get orderId for refreshing order status later
       const orderItem = await prisma.orderItem.findUnique({
         where: { id: item.id },
         select: { orderId: true },
       });
 
-      // 8️⃣ Transaction: create batch item, units, update capacity + statuses
+      // 9️⃣ Transaction: create batch item, units, update capacity and statuses
       await prisma.$transaction(async (tx) => {
-        // Create BatchItem
         const createdBatchItem = await tx.batchItem.create({
           data: {
             batchId: availableBatch.id,
@@ -113,43 +128,39 @@ async function assignOrderItemsToBatches(orderItems) {
           },
         });
 
-        // Create BatchItemUnits for each unit in this item
         const unitsData = Array.from({ length: quantityToAdd }).map(() => ({
           batchItemId: createdBatchItem.id,
           status: "WAITING_BATCH",
         }));
-        await tx.batchItemUnit.createMany({
-          data: unitsData,
-        });
 
-        // Update batch capacity
+        await tx.batchItemUnit.createMany({ data: unitsData });
+
         await tx.batch.update({
           where: { id: availableBatch.id },
           data: { capacity: { increment: quantityToAdd } },
         });
 
-        // Update order item status
         await tx.orderItem.update({
           where: { id: item.id },
           data: { status: "WAITING_BATCH" },
         });
 
-        // Update parent order status
         await updateOrderStatusFromItems(orderItem.orderId, tx);
       });
 
       console.log(
-        `✅ Item ${item.id} → ${availableBatch.name} (${quantityToAdd}/${item.quantity})`
+        `✅ Item ${item.id} → ${availableBatch.name} (${quantityToAdd}/${remainingQuantity})`
       );
 
-      // 9️⃣ Auto-update batch status based on new capacity
+      // 🔟 Auto-update batch status based on updated capacity
       await autoUpdateBatchStatus(availableBatch.id);
 
-      // 🔟 Reduce remaining quantity
+      // 1️⃣1️⃣ Reduce remaining quantity by how many units we just assigned
       remainingQuantity -= quantityToAdd;
     }
   }
 }
+
 async function createReplacementUnit(unitId, reason = "REDESIGN") {
   return await prisma.$transaction(async (tx) => {
     // 1️⃣ Get the corrupted unit
@@ -361,6 +372,7 @@ function deriveStatusFromUnits(statuses) {
     "REPRINT",
     "PENDING",
     "CANCELLED",
+    "RETURNED",
   ];
 
   for (const status of statusPriority) {

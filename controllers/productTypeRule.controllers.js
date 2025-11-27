@@ -1,9 +1,8 @@
 const prisma = require("../prisma/client");
 
-// Create new product type rule
 async function createRule(req, res) {
   try {
-    const { name, isPod, storeName } = req.body;
+    const { name, isPod, requiresStock, storeName } = req.body;
 
     if (!name) return res.status(400).json({ error: "Missing rule name" });
     if (!storeName)
@@ -11,7 +10,6 @@ async function createRule(req, res) {
 
     const trimmedName = name.trim();
 
-    // 🏪 Find the store by name (case-insensitive)
     const store = await prisma.store.findFirst({
       where: { name: { equals: storeName.trim(), mode: "insensitive" } },
     });
@@ -20,7 +18,6 @@ async function createRule(req, res) {
       return res.status(404).json({ error: `Store '${storeName}' not found` });
     }
 
-    // 🔍 Check if a rule with this name already exists for this store
     let rule = await prisma.productTypeRule.findFirst({
       where: {
         name: { equals: trimmedName, mode: "insensitive" },
@@ -29,36 +26,42 @@ async function createRule(req, res) {
     });
 
     if (rule) {
-      // Rule exists → update if needed
-      if (rule.isPod !== !!isPod) {
+      const dataToUpdate = {};
+      if (rule.isPod !== !!isPod) dataToUpdate.isPod = !!isPod;
+      if (rule.requiresStock !== !!requiresStock)
+        dataToUpdate.requiresStock = !!requiresStock;
+
+      if (Object.keys(dataToUpdate).length > 0) {
         rule = await prisma.productTypeRule.update({
           where: { id: rule.id },
-          data: { isPod: !!isPod },
+          data: dataToUpdate,
         });
 
-        // 🧩 Update this store's products matching this rule name
+        // Update related products if needed
         await prisma.product.updateMany({
           where: {
             storeId: store.id,
             productType: { equals: rule.name, mode: "insensitive" },
           },
-          data: { isPod: rule.isPod },
+          data: {
+            isPod: rule.isPod,
+            // optionally handle stock flags on products if relevant
+          },
         });
       }
 
       return res.status(200).json(rule);
     }
 
-    // 🆕 Create new rule for this store
     rule = await prisma.productTypeRule.create({
       data: {
         name: trimmedName,
         isPod: !!isPod,
-        storeId: store.id, // ✅ use storeId, not id
+        requiresStock: !!requiresStock,
+        storeId: store.id,
       },
     });
 
-    // 🧩 Update products that match this new rule name for this store
     await prisma.product.updateMany({
       where: {
         storeId: store.id,
