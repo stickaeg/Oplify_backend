@@ -4,7 +4,7 @@ const generateBatchQRCodes = require("../util/generateBatchQRCodes");
 
 async function createBatch(req, res) {
   try {
-    const { ruleIds, maxCapacity, batchName } = req.body;
+    const { ruleIds, maxCapacity, batchName, handlesStock } = req.body;
 
     if (
       !ruleIds ||
@@ -31,7 +31,6 @@ async function createBatch(req, res) {
 
     const baseName = batchName.trim();
 
-    // ✅ Count all batches with this name (across all stores)
     const countForThisName = await prisma.batch.count({
       where: {
         name: { startsWith: baseName },
@@ -49,6 +48,7 @@ async function createBatch(req, res) {
         maxCapacity: parseInt(maxCapacity),
         capacity: 0,
         status: "PENDING",
+        handlesStock: !!handlesStock, // New flag here
         rules: { connect: rules.map((r) => ({ id: r.id })) },
       },
       include: { rules: true },
@@ -240,6 +240,7 @@ async function updateBatchStatus(req, res) {
       "PACKED",
       "COMPLETED",
       "CANCELLED",
+      "RETURNED",
     ];
 
     if (!validStatuses.includes(status)) {

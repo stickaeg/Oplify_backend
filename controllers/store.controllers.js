@@ -4,6 +4,7 @@ const {
   createWebhook,
   deleteOldWebhooks,
   createOrderWebhook,
+  fetchShopLocationId,
 } = require("../services/shopifyServices");
 const prisma = require("../prisma/client");
 
@@ -67,6 +68,17 @@ async function addStore(req, res) {
       }
     } catch (err) {
       console.error("Webhook creation error:", err?.message || err);
+    }
+
+    try {
+      const locationId = await fetchShopLocationId(shopDomain, accessToken);
+      await prisma.store.update({
+        where: { id: store.id },
+        data: { shopifyLocationId: locationId },
+      });
+      console.log(`✅ Store location saved: ${locationId}`);
+    } catch (err) {
+      console.warn("Failed to fetch/save store location:", err.message);
     }
 
     // Sync products

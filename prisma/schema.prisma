@@ -43,6 +43,11 @@ model Order {
   totalPrice     Float?
   status         Status      @default(PENDING)
 
+   shopifyCurrency        String?     // "USD", "EGP"
+  shopifyTransactions    Json?       // JSON array of transactions
+  shopifyLocationId      String?     // gid://shopify/Location/...
+  
+
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
@@ -64,11 +69,17 @@ model OrderItem {
   quantity    Int
   price       Float?
   status      Status   @default(WAITING_BATCH)
+
+    shopifyLineItemId      String?     // gid://shopify/LineItem/...
+
   
   BatchItem   BatchItem[]
+    stockReservation StockReservation?
+
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
 
   @@unique([orderId, productId, variantId])
   @@index([status])
@@ -86,6 +97,8 @@ model Store {
   
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+
+  shopifyLocationId      String?     // gid://shopify/Location/...
 
   rules   ProductTypeRule[]
 
@@ -129,6 +142,8 @@ model ProductVariant {
   updatedAt         DateTime  @updatedAt
 
   OrderItem         OrderItem[]
+    stockMappings    ProductStockMapping[] // relation field pointing back
+
 
   @@unique([shopifyId, productId])
   @@index([sku])
@@ -141,6 +156,9 @@ model ProductTypeRule {
   isPod       Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  
+  requiresStock Boolean @default(false)  // NEW flag to indicate stock requirement
+
 
   storeId     String
 
@@ -166,6 +184,9 @@ model Batch {
   capacity    Int       @default(0)
   items       BatchItem[]
   status Status @default(WAITING_BATCH)
+  
+  handlesStock  Boolean          @default(false)   // NEW: indicates batch involves stock handling
+
   createdAt   DateTime  @default(now())
 
   File File[]
@@ -226,5 +247,118 @@ enum Status {
   REPRINT
   REDESIGN
   COMPLETED
+  RETURNED
   CANCELLED
+}
+
+
+
+
+// Represents a physical stock item (e.g., "Standard Ceramic Mug 11oz")
+model StockItem {
+  id          String          @id @default(cuid())
+  name        String
+  sku         String          @unique
+
+  variants    StockVariant[]
+  
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+// Variants of the stock item, e.g., colors (blue, red, pink)
+model StockVariant {
+  id            String          @id @default(cuid())
+  stockItemId   String
+  stockItem     StockItem       @relation(fields: [stockItemId], references: [id], onDelete: Cascade)
+  
+  sku           String          @unique
+  name          String
+  color         String?
+  size          String?
+  currentStock  Int             @default(0)
+  minStockLevel Int             @default(5)
+  maxStockLevel Int?
+  
+  reservations  StockReservation[]
+  movements     StockMovement[]
+  productMappings ProductStockMapping[]  // inverse relation field
+
+  
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+// Links the Shopify ProductVariant to your StockVariant with quantity required
+model ProductStockMapping {
+  id               String          @id @default(cuid())
+  productVariantId String
+  productVariant   ProductVariant  @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+  
+  stockVariantId   String
+  stockVariant     StockVariant    @relation(fields: [stockVariantId], references: [id])
+  
+  quantityRequired Int             @default(1)
+  
+  createdAt        DateTime        @default(now())
+
+  @@unique([productVariantId, stockVariantId])
+}
+
+// Holds reserved stock for orders
+model StockReservation {
+  id              String          @id @default(cuid())
+  stockVariantId  String
+  stockVariant    StockVariant    @relation(fields: [stockVariantId], references: [id])
+  
+  orderItemId     String          @unique
+  orderItem       OrderItem       @relation(fields: [orderItemId], references: [id])
+  
+  quantity        Int
+  status          ReservationStatus @default(RESERVED)
+  
+  expiresAt       DateTime?
+  reservedAt      DateTime        @default(now())
+  fulfilledAt     DateTime?
+  releasedAt      DateTime?
+  
+  @@index([stockVariantId, status])
+}
+
+enum ReservationStatus {
+  RESERVED
+  FULFILLED
+  RELEASED
+}
+
+// Tracks all stock movements for audit and tracking
+model StockMovement {
+  id              String          @id @default(cuid())
+  stockVariantId  String
+  stockVariant    StockVariant    @relation(fields: [stockVariantId], references: [id])
+  
+  type            MovementType
+  quantity        Int
+  previousStock   Int
+  newStock        Int
+  
+  orderItemId     String?
+  batchId         String?
+  userId          Int?
+  
+  reason          String?
+  notes           String?
+  
+  createdAt       DateTime        @default(now())
+  
+  @@index([stockVariantId, createdAt])
+  @@index([type])
+}
+
+enum MovementType {
+  PURCHASE
+  SALE
+  ADJUSTMENT
+  DAMAGE
+  RETURN
 }

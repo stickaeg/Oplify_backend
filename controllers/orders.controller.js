@@ -315,6 +315,7 @@ function determineOverallStatus(batchProgress) {
     "BATCHED",
     "WAITING_BATCH",
     "PENDING",
+    "RETURNED",
     "CANCELLED",
   ];
 
@@ -346,6 +347,7 @@ async function updateOrderItemStatus(req, res) {
       "FULFILLMENT",
       "PACKED",
       "COMPLETED",
+      "RETURNED",
       "CANCELLED",
     ];
 
@@ -517,6 +519,7 @@ function deriveStatusFromUnits(statuses) {
     "BATCHED",
     "WAITING_BATCH",
     "PENDING",
+    "RETURNED",
     "CANCELLED",
   ];
 

@@ -1,6 +1,10 @@
 const { decrypt } = require("../lib/crypto");
 const prisma = require("../prisma/client");
-const { fulfillOrder } = require("../services/shopifyServices");
+const {
+  fulfillOrder,
+  cancelOrder,
+  createRefund,
+} = require("../services/shopifyServices");
 
 async function updateOrderStatusFromItems(orderId, tx = prisma) {
   // 🧩 Load order and all related item-unit statuses through BatchItem
@@ -9,6 +13,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     include: {
       items: {
         include: {
+          product: true, // ✅ ADD THIS for item.product.title
           BatchItem: {
             include: {
               units: {
@@ -24,23 +29,105 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
 
   if (!order || !order.items.length) return;
 
-  // 🧮 Collect all relevant statuses
+  // 🧮 Collect all relevant statuses + track RETURNED items
   const allStatuses = [];
+  const returnedItems = []; // ✅ NEW: Track items for refund
 
   for (const item of order.items) {
     if (item.BatchItem && item.BatchItem.length > 0) {
-      // ✅ If item has batches, use unit statuses
+      // ✅ If item has batches, check unit statuses
       const unitStatuses = item.BatchItem.flatMap((bi) =>
-        bi.units.map((u) => u.status)
+        bi.units.map((u) => {
+          if (u.status === "RETURNED") {
+            returnedItems.push(item); // Track the OrderItem for refund
+          }
+          return u.status;
+        })
       );
       allStatuses.push(...unitStatuses);
     } else {
-      // ✅ If no batches, use the OrderItem status directly
+      // ✅ If no batches, use OrderItem status
+      if (item.status === "RETURNED") {
+        returnedItems.push(item); // Track for refund
+      }
       allStatuses.push(item.status);
     }
   }
 
   if (allStatuses.length === 0) return;
+
+  // ❌ All CANCELLED → CANCELLED + Cancel in Shopify
+  if (allStatuses.every((s) => s === "CANCELLED")) {
+    await tx.order.update({
+      where: { id: orderId },
+      data: { status: "CANCELLED" },
+    });
+
+    console.log(`🛑 Order ${orderId} cancelled, cancelling in Shopify...`);
+    const decryptedToken = decrypt(order.store.accessToken);
+
+    try {
+      await cancelOrder(
+        order.store.shopDomain,
+        decryptedToken,
+        order.shopifyId,
+        {
+          refund: true,
+          restock: true,
+          reason: "CUSTOMER",
+        }
+      );
+      console.log(`✅ Shopify order ${orderId} cancelled`);
+    } catch (err) {
+      console.error(
+        `❌ Failed to cancel order in Shopify for order ${orderId}:`,
+        err.message
+      );
+    }
+    return;
+  }
+
+  // ✅ NEW: Handle RETURNED items → Create Shopify refunds
+  if (returnedItems.length > 0) {
+    console.log(
+      `↩️ Processing ${returnedItems.length} returned item(s) for order ${orderId}`
+    );
+    const decryptedToken = decrypt(order.store.accessToken);
+
+    for (const item of returnedItems) {
+      try {
+        const transactions = JSON.parse(order.shopifyTransactions || "[]");
+        const firstTransaction = transactions[0];
+
+        await createRefund(order.store.shopDomain, decryptedToken, {
+          orderId: order.shopifyId,
+          lineItemId: item.shopifyLineItemId,
+          quantity: 1,
+          amount: item.price?.toString() || "0.00",
+          currencyCode: order.shopifyCurrency || "USD",
+          transactionId: firstTransaction?.id
+            ? `gid://shopify/Transaction/${firstTransaction.id}`
+            : null,
+          locationId: order.shopifyLocationId || order.store.shopifyLocationId,
+          note: `Item returned - ${item.product?.title || "Unknown product"}`, // ✅ Safe
+          notify: true,
+          restockType: "RETURN",
+        });
+        console.log(`✅ Shopify refund created for item ${item.id}`);
+      } catch (err) {
+        console.error(`❌ Failed refund for item ${item.id}:`, err.message);
+      }
+    }
+  }
+
+  if (allStatuses.every((s) => s === "RETURNED")) {
+    await tx.order.update({
+      where: { id: orderId },
+      data: { status: "RETURNED" },
+    });
+    console.log(`↩️ Order ${orderId} fully returned`);
+    return;
+  }
 
   // ✅ All PACKED → COMPLETED
   if (allStatuses.every((s) => s === "PACKED")) {
@@ -49,9 +136,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
       data: { status: "COMPLETED" },
     });
 
-    // ✅ Fulfill the order in Shopify
     console.log(`📦 Order ${orderId} completed, fulfilling in Shopify...`);
-
     const decryptedToken = decrypt(order.store.accessToken);
 
     try {
@@ -66,7 +151,6 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
         `❌ Failed to fulfill order in Shopify for order ${orderId}:`,
         err.message
       );
-      // Don't throw - we still want the local status updated even if Shopify fails
     }
     return;
   }
@@ -76,15 +160,6 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     await tx.order.update({
       where: { id: orderId },
       data: { status: "FULFILLMENT" },
-    });
-    return;
-  }
-
-  // ❌ All CANCELLED → CANCELLED
-  if (allStatuses.every((s) => s === "CANCELLED")) {
-    await tx.order.update({
-      where: { id: orderId },
-      data: { status: "CANCELLED" },
     });
     return;
   }
@@ -101,6 +176,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     "CUTTING",
     "CUT",
     "FULFILLMENT",
+    "RETURNED",
     "PACKED",
   ];
 

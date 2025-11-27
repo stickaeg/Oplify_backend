@@ -186,7 +186,6 @@ async function createOrderWebhook(shopDomain, accessToken, callbackUrl) {
   );
 }
 
-// ✅ NEW: Query to get fulfillment orders for an order
 const GET_FULFILLMENT_ORDERS_QUERY = `
   query getFulfillmentOrders($orderId: ID!) {
     order(id: $orderId) {
@@ -293,11 +292,196 @@ async function fulfillOrder(shopDomain, accessToken, shopifyOrderId) {
   }
 }
 
+// ✅ Cancel full order (optionally refund + restock)
+const ORDER_CANCEL_MUTATION = `
+  mutation orderCancel(
+    $orderId: ID!,
+    $refund: Boolean!,
+    $restock: Boolean!,
+    $reason: OrderCancelReason!
+  ) {
+    orderCancel(
+      orderId: $orderId,
+      refund: $refund,
+      restock: $restock,
+      reason: $reason
+    ) {
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+// ✅ Refund / return specific items
+const REFUND_CREATE_MUTATION = `
+  mutation refundCreate($input: RefundInput!) {
+    refundCreate(input: $input) {
+      refund {
+        id
+        createdAt
+        totalRefundedSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+      order {
+        id
+      }
+    }
+  }
+`;
+
+// ✅ FIXED: Simplified cancelOrder for 2025-04 API
+async function cancelOrder(
+  shopDomain,
+  accessToken,
+  shopifyOrderId,
+  { refund = true, restock = true, reason = "CUSTOMER" } = {}
+) {
+  try {
+    console.log(`🛑 Cancelling order ${shopifyOrderId}...`);
+
+    const variables = {
+      orderId: shopifyOrderId,
+      refund,
+      restock,
+      reason,
+    };
+
+    const result = await graphqlRequest(
+      shopDomain,
+      accessToken,
+      ORDER_CANCEL_MUTATION,
+      variables
+    );
+
+    const payload = result.orderCancel;
+
+    if (payload.userErrors && payload.userErrors.length > 0) {
+      console.error("❌ Shopify orderCancel errors:", payload.userErrors);
+      throw new Error(JSON.stringify(payload.userErrors));
+    }
+
+    console.log(`✅ Order ${shopifyOrderId} canceled`);
+    return payload;
+  } catch (err) {
+    console.error("❌ Error canceling order:", err?.message || err);
+    throw err;
+  }
+}
+
+// ✅ FIXED: Use input wrapper like original
+async function createRefund(
+  shopDomain,
+  accessToken,
+  {
+    orderId,
+    lineItemId,
+    quantity,
+    amount,
+    currencyCode,
+    transactionId,
+    locationId,
+    note = null,
+    notify = true,
+    restockType = "RETURN",
+  }
+) {
+  try {
+    console.log(`↩️ Creating refund for order ${orderId}...`);
+
+    const input = {
+      orderId,
+      notify,
+      note,
+      refundLineItems: [
+        {
+          lineItemId,
+          quantity,
+          restockType,
+          locationId,
+        },
+      ],
+      transactions: transactionId
+        ? [
+            {
+              parentId: transactionId,
+              kind: "REFUND",
+              amount,
+            },
+          ]
+        : [],
+    };
+
+    const result = await graphqlRequest(
+      shopDomain,
+      accessToken,
+      REFUND_CREATE_MUTATION,
+      { input } // ✅ Use { input } wrapper
+    );
+
+    const payload = result.refundCreate;
+
+    if (payload.userErrors && payload.userErrors.length > 0) {
+      console.error("❌ Shopify refundCreate errors:", payload.userErrors);
+      throw new Error(JSON.stringify(payload.userErrors));
+    }
+
+    console.log(
+      `✅ Refund created: ${payload.refund.id}, total: ${payload.refund.totalRefundedSet.shopMoney.amount} ${payload.refund.totalRefundedSet.shopMoney.currencyCode}`
+    );
+
+    return payload.refund;
+  } catch (err) {
+    console.error("❌ Error creating refund:", err?.message || err);
+    throw err;
+  }
+}
+
+// Query to fetch first shop location id
+const GET_LOCATIONS_QUERY = `
+  query {
+    locations(first: 1) {
+      edges {
+        node {
+          id
+          name
+        }
+      }
+    }
+  }
+`;
+
+// Fetch first shop location from Shopify
+async function fetchShopLocationId(shopDomain, accessToken) {
+  const data = await graphqlRequest(
+    shopDomain,
+    accessToken,
+    GET_LOCATIONS_QUERY
+  );
+  const location = data.locations.edges[0]?.node;
+  if (!location) {
+    throw new Error("No locations found for store");
+  }
+  return location.id;
+}
+
 module.exports = {
   fetchAllProductsGraphql,
   graphqlRequest,
   createWebhook,
   deleteOldWebhooks,
   createOrderWebhook,
-  fulfillOrder, // ✅ NEW export
+  fulfillOrder,
+  cancelOrder,
+  createRefund,
+  fetchShopLocationId,
 };

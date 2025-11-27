@@ -12,7 +12,6 @@ router.get("/", listBatches);
 
 router.get("/rules", listRules); 
 
-
 router.get("/:batchId", getBatchById);
 
 router.patch("/:batchId/status", updateBatchStatus);
