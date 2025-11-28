@@ -185,7 +185,7 @@ async function scanUnitFulfillment(req, res) {
     const orderItem = batchItem.orderItem;
     const order = orderItem.order;
 
-    if (unit.status === "PACKED") {
+    if (unit.status === "FULFILLED") {
       const currentOrder = await prisma.order.findUnique({
         where: { id: order.id },
         include: {
@@ -227,36 +227,36 @@ async function scanUnitFulfillment(req, res) {
     await prisma.$transaction(async (tx) => {
       await tx.batchItemUnit.update({
         where: { id: unit.id },
-        data: { status: "PACKED" },
+        data: { status: "FULFILLED" },
       });
 
       const allUnitsPacked = batchItem.units.every(
-        (u) => u.id === unit.id || u.status === "PACKED"
+        (u) => u.id === unit.id || u.status === "FULFILLED"
       );
       if (allUnitsPacked) {
         await tx.batchItem.update({
           where: { id: batchItem.id },
-          data: { status: "PACKED" },
+          data: { status: "FULFILLED" },
         });
       }
 
       const allItemUnitsPacked = orderItem.BatchItem?.every((bi) =>
-        bi.units.every((u) => (u.id === unit.id ? true : u.status === "PACKED"))
+        bi.units.every((u) => (u.id === unit.id ? true : u.status === "FULFILLED"))
       );
       if (allItemUnitsPacked) {
         await tx.orderItem.update({
           where: { id: orderItem.id },
-          data: { status: "PACKED" },
+          data: { status: "FULFILLED" },
         });
       }
 
       const allItemsPacked = order.items.every(
-        (item) => item.id === orderItem.id || item.status === "PACKED"
+        (item) => item.id === orderItem.id || item.status === "FULFILLED"
       );
       if (allItemsPacked) {
         await tx.order.update({
           where: { id: order.id },
-          data: { status: "COMPLETED" },
+          data: { status: "FULFILLED" },
         });
 
         // ✅ Call updateOrderStatusFromItems AFTER order is COMPLETED

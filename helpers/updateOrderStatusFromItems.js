@@ -13,7 +13,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     include: {
       items: {
         include: {
-          product: true, // ✅ ADD THIS for item.product.title
+          product: true,
           BatchItem: {
             include: {
               units: {
@@ -109,7 +109,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
             ? `gid://shopify/Transaction/${firstTransaction.id}`
             : null,
           locationId: order.shopifyLocationId || order.store.shopifyLocationId,
-          note: `Item returned - ${item.product?.title || "Unknown product"}`, // ✅ Safe
+          note: `Item returned - ${item.product?.title || "Unknown product"}`,
           notify: true,
           restockType: "RETURN",
         });
@@ -130,10 +130,10 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
   }
 
   // ✅ All PACKED → COMPLETED
-  if (allStatuses.every((s) => s === "PACKED")) {
+  if (allStatuses.every((s) => s === "FULFILLED")) {
     await tx.order.update({
       where: { id: orderId },
-      data: { status: "COMPLETED" },
+      data: { status: "FULFILLED" },
     });
 
     console.log(`📦 Order ${orderId} completed, fulfilling in Shopify...`);
@@ -176,6 +176,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     "CUTTING",
     "CUT",
     "FULFILLMENT",
+    "FULFILLED",
     "RETURNED",
     "PACKED",
   ];
