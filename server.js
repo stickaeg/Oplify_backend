@@ -15,6 +15,8 @@ const webhooksRoutes = require("./routes/webhooksRoutes");
 const googleRoutes = require("./routes/googleRoutes");
 const scanRoutes = require("./routes/scanRoutes");
 
+const inventoryRoutes = require("./routes/inventoryRoutes");
+
 const {
   authWithRefresh,
   requireRole,
@@ -70,6 +72,8 @@ app.use("/api/orders", ordersRoutes);
 app.use("/api/scan", scanRoutes);
 
 app.use("/api/google", googleRoutes);
+
+app.use("/api/inventory", inventoryRoutes);
 
 app.use("/api/admin", requireRole("ADMIN"), adminRoutes);
 
