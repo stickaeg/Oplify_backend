@@ -345,6 +345,7 @@ async function updateOrderItemStatus(req, res) {
       "CUTTING",
       "CUT",
       "FULFILLMENT",
+      "FULFILLED",
       "PACKED",
       "COMPLETED",
       "RETURNED",
