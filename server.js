@@ -14,6 +14,7 @@ const batchesRoutes = require("./routes/batchesRoutes");
 const webhooksRoutes = require("./routes/webhooksRoutes");
 const googleRoutes = require("./routes/googleRoutes");
 const scanRoutes = require("./routes/scanRoutes");
+const inventoryRoutes = require("./routes/inventoryRoutes");
 
 const {
   authWithRefresh,
@@ -71,7 +72,9 @@ app.use("/api/scan", scanRoutes);
 
 app.use("/api/google", googleRoutes);
 
-app.use("/api/admin", requireRole("ADMIN"), adminRoutes);
+app.use("/api/inventory", inventoryRoutes);
+
+app.use("/api/admin", requireRole(["ADMIN", "USER"]), adminRoutes);
 
 const PORT = process.env.PORT;
 

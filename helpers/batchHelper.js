@@ -21,28 +21,35 @@ async function assignOrderItemsToBatches(orderItems) {
     });
 
     if (!product || !product.productType) {
-      console.log(
-        `🚫 Skipping item ${item.id}: missing product or productType`
-      );
       continue;
     }
 
-    // 3️⃣ Get product rule (global)
+    // 3️⃣ Get variant info to obtain the title
+    const variant = item.variantId
+      ? await prisma.productVariant.findUnique({
+          where: { id: item.variantId },
+        })
+      : null;
+
+    const variantTitle = variant?.title || null;
+
+    // 4️⃣ Get product rule matching productType and variantTitle
     const rule = await prisma.productTypeRule.findFirst({
       where: {
         name: { equals: product.productType, mode: "insensitive" },
         storeId: product.storeId,
+        variantTitle: variantTitle, // Variant title used here for matching
       },
     });
 
     if (!rule) {
       console.log(
-        `⚠️ No global rule found for product type: ${product.productType}`
+        `⚠️ No rule found for product type '${product.productType}' with variant '${variantTitle}'`
       );
       continue;
     }
 
-    // 4️⃣ Determine if batch should handle stock based on product rule
+    // 5️⃣ Determine if batch should handle stock based on product rule
     const needsStockHandling = rule.requiresStock === true;
     const isPod = rule.isPod === true;
 
@@ -57,7 +64,7 @@ async function assignOrderItemsToBatches(orderItems) {
     let remainingQuantity = item.quantity;
 
     while (remainingQuantity > 0) {
-      // 5️⃣ Find existing batches for this rule matching stock handling flag
+      // 6️⃣ Find existing batches for this rule matching stock handling flag
       const batches = await prisma.batch.findMany({
         where: {
           rules: { some: { id: rule.id, storeId: product.storeId } },
@@ -69,7 +76,7 @@ async function assignOrderItemsToBatches(orderItems) {
       // Find batch with available space
       let availableBatch = batches.find((b) => b.capacity < b.maxCapacity);
 
-      // 6️⃣ If no suitable batch exists, create a new one
+      // 7️⃣ If no suitable batch exists, create a new one
       if (!availableBatch) {
         const lastBatch = await prisma.batch.findFirst({
           where: { rules: { some: { id: rule.id } } },
@@ -78,6 +85,8 @@ async function assignOrderItemsToBatches(orderItems) {
 
         const baseName = lastBatch
           ? lastBatch.name.split(" - Batch #")[0]
+          : variantTitle
+          ? `${rule.name} - ${variantTitle}`
           : rule.name;
 
         const countForThisName = await prisma.batch.count({
@@ -106,18 +115,18 @@ async function assignOrderItemsToBatches(orderItems) {
         console.log(`🆕 Created new batch: ${availableBatch.name}`);
       }
 
-      // 7️⃣ Determine how many units to add
+      // 8️⃣ Determine how many units to add
       const availableSpace =
         availableBatch.maxCapacity - availableBatch.capacity;
       const quantityToAdd = Math.min(remainingQuantity, availableSpace);
 
-      // 8️⃣ Get orderId for refreshing order status later
+      // 9️⃣ Get orderId for updating order status later
       const orderItem = await prisma.orderItem.findUnique({
         where: { id: item.id },
         select: { orderId: true },
       });
 
-      // 9️⃣ Transaction: create batch item, units, update capacity and statuses
+      // 1️⃣0️⃣ Transaction: create batch item, units, update capacity and statuses
       await prisma.$transaction(async (tx) => {
         const createdBatchItem = await tx.batchItem.create({
           data: {
@@ -152,10 +161,10 @@ async function assignOrderItemsToBatches(orderItems) {
         `✅ Item ${item.id} → ${availableBatch.name} (${quantityToAdd}/${remainingQuantity})`
       );
 
-      // 🔟 Auto-update batch status based on updated capacity
+      // 1️⃣1️⃣ Auto-update batch status
       await autoUpdateBatchStatus(availableBatch.id);
 
-      // 1️⃣1️⃣ Reduce remaining quantity by how many units we just assigned
+      // 1️⃣2️⃣ Reduce remaining quantity
       remainingQuantity -= quantityToAdd;
     }
   }

@@ -43,7 +43,7 @@ model Order {
   totalPrice     Float?
   status         Status      @default(PENDING)
 
-   shopifyCurrency        String?     // "USD", "EGP"
+  shopifyCurrency        String?     // "USD", "EGP"
   shopifyTransactions    Json?       // JSON array of transactions
   shopifyLocationId      String?     // gid://shopify/Location/...
   
@@ -70,7 +70,7 @@ model OrderItem {
   price       Float?
   status      Status   @default(WAITING_BATCH)
 
-    shopifyLineItemId      String?     // gid://shopify/LineItem/...
+  shopifyLineItemId      String?     // gid://shopify/LineItem/...
 
   
   BatchItem   BatchItem[]
@@ -120,7 +120,7 @@ model Product {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
-  variants    ProductVariant[] // relation to variants
+  variants    ProductVariant[] 
   OrderItem   OrderItem[]
 
   @@unique([shopifyId, storeId])
@@ -142,7 +142,7 @@ model ProductVariant {
   updatedAt         DateTime  @updatedAt
 
   OrderItem         OrderItem[]
-    stockMappings    ProductStockMapping[] // relation field pointing back
+  stockMappings    ProductStockMapping[] // relation field pointing back
 
 
   @@unique([shopifyId, productId])
@@ -154,22 +154,57 @@ model ProductTypeRule {
   id          String   @id @default(cuid())
   name        String   
   isPod       Boolean  @default(false)
+
+  variantTitle  String?  
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
-  requiresStock Boolean @default(false)  // NEW flag to indicate stock requirement
+  requiresStock Boolean @default(false) 
 
 
   storeId     String
 
   store       Store    @relation(fields: [storeId], references: [id])
-
+  mainStocks    MainStock[] @relation("MainStockRules")
 
   batches   Batch[] @relation("BatchRules")
 
-@@unique([name, storeId])
+  @@unique([name, variantTitle, storeId], name: "ProductTypeRule_unique")
 
 }
+
+model MainStock {
+  id          String                 @id @default(cuid())
+  name        String
+  totalQty    Int                    @default(0)  
+  rules       ProductTypeRule[]      @relation("MainStockRules")
+
+
+
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  @@unique([name])
+}
+
+model ProductStockQuantity {
+  id               String         @id @default(cuid())
+  mainStockId      String
+  
+  sku         String   // universal SKU for this main stock
+
+ 
+
+  quantity         Int            @default(0)  // the quantity of THIS product in THIS main stock
+
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([mainStockId, sku])
+  
+}
+
 
 model Batch {
   id          String   @id @default(cuid())
@@ -177,8 +212,8 @@ model Batch {
 
   rules       ProductTypeRule[] @relation("BatchRules")
 
-  qrCodeUrl   String?  // URL or base64 of QR image
-  qrCodeToken String?  @unique // unique token to identify via scan
+  qrCodeUrl   String?  
+  qrCodeToken String?  @unique 
 
   maxCapacity Int
   capacity    Int       @default(0)
@@ -253,8 +288,6 @@ enum Status {
 }
 
 
-
-
 // Represents a physical stock item (e.g., "Standard Ceramic Mug 11oz")
 model StockItem {
   id          String          @id @default(cuid())
@@ -280,19 +313,27 @@ model StockVariant {
   currentStock  Int             @default(0)
   minStockLevel Int             @default(5)
   maxStockLevel Int?
+
+  variantTitle  String?   
+
   
   reservations  StockReservation[]
   movements     StockMovement[]
-  productMappings ProductStockMapping[]  // inverse relation field
+
+  productMappings ProductStockMapping[]  
 
   
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
+
+  @@index([variantTitle])
+
 }
 
 // Links the Shopify ProductVariant to your StockVariant with quantity required
 model ProductStockMapping {
   id               String          @id @default(cuid())
+    
   productVariantId String
   productVariant   ProductVariant  @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
   

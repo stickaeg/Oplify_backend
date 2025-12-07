@@ -249,11 +249,11 @@ async function handleOrderCreate(req, res) {
           },
         });
 
-        // Load product type rule to check stock requirement
         const productRule = await tx.productTypeRule.findFirst({
           where: {
             storeId: store.id,
             name: product.productType,
+            variantTitle: item.variant_title || null,
           },
         });
 
@@ -268,8 +268,6 @@ async function handleOrderCreate(req, res) {
           quantity: item.quantity,
           price: item.price ? parseFloat(item.price) : null,
           status: "WAITING_BATCH",
-
-          // ✅ NEW FIELD FOR REFUNDS:
           shopifyLineItemId: `gid://shopify/LineItem/${item.id}`,
         };
 
@@ -288,7 +286,6 @@ async function handleOrderCreate(req, res) {
             console.warn(
               `⚠️ No stock mapping for ProductVariant ${variant.id}`
             );
-            // Optionally, you may reject or continue depending on business logic
           } else {
             const stockVariant = await tx.stockVariant.findUnique({
               where: { id: stockMapping.stockVariantId },
@@ -340,7 +337,6 @@ async function handleOrderCreate(req, res) {
       }
     });
 
-    // Auto-assign to batch with your existing function
     try {
       await assignOrderItemsToBatches(processedItems);
       console.log("🧺 Items assigned to batches successfully");

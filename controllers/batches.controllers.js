@@ -19,8 +19,10 @@ async function createBatch(req, res) {
       });
     }
 
+    // 🔍 1️⃣ Fetch rules WITH variantTitle
     const rules = await prisma.productTypeRule.findMany({
       where: { id: { in: ruleIds } },
+      include: { store: true }, // Need store for validation
     });
 
     if (rules.length === 0) {
@@ -29,38 +31,82 @@ async function createBatch(req, res) {
         .json({ error: "No ProductTypeRules found for given IDs." });
     }
 
+    // ✅ 2️⃣ VALIDATE: Same store + compatible variants
+    const storeId = rules[0].storeId;
+    const hasSpecificVariants = rules.some((r) => r.variantTitle);
+
+    // All rules must be from same store
+    if (!rules.every((r) => r.storeId === storeId)) {
+      return res
+        .status(400)
+        .json({ error: "All rules must belong to the same store" });
+    }
+
+    // If any rule has variantTitle, ALL must match or be null
+    if (hasSpecificVariants) {
+      const variantTitles = rules.map((r) => r.variantTitle).filter(Boolean);
+      if (new Set(variantTitles).size > 1) {
+        return res.status(400).json({
+          error: "Cannot mix different variant titles in one batch",
+        });
+      }
+    }
+
+    // 🏷️ 3️⃣ SMART BATCH NAME with variant awareness
     const baseName = batchName.trim();
+    const variantTitle = rules.find((r) => r.variantTitle)?.variantTitle;
+    const smartBatchName = variantTitle
+      ? `${rules[0].name} - ${variantTitle}` // "Mug - Small/White"
+      : rules[0].name; // "Mug" (all variants)
 
     const countForThisName = await prisma.batch.count({
       where: {
-        name: { startsWith: baseName },
+        name: { startsWith: smartBatchName },
+        rules: { some: { id: { in: ruleIds } } }, // More specific
       },
     });
 
     const finalBatchName =
       countForThisName > 0
-        ? `${baseName} - Batch #${countForThisName + 1}`
-        : `${baseName} - Batch #1`;
+        ? `${smartBatchName} - Batch #${countForThisName + 1}`
+        : `${smartBatchName} - Batch #1`;
 
+    // 🚀 4️⃣ Create batch with proper settings
     const batch = await prisma.batch.create({
       data: {
         name: finalBatchName,
         maxCapacity: parseInt(maxCapacity),
         capacity: 0,
-        status: "PENDING",
-        handlesStock: !!handlesStock, // New flag here
+        status: "WAITING_BATCH", // Match your enum
+        handlesStock: !!handlesStock,
         rules: { connect: rules.map((r) => ({ id: r.id })) },
       },
-      include: { rules: true },
+      include: {
+        rules: {
+          select: {
+            name: true,
+            variantTitle: true,
+            isPod: true,
+            requiresStock: true,
+          },
+        },
+      },
     });
 
     return res.status(201).json({
       message: "Batch created successfully",
       batch,
+      rules: rules.map((r) => ({
+        name: r.name,
+        variantTitle: r.variantTitle,
+        smartBatchName: finalBatchName,
+      })),
     });
   } catch (err) {
     console.error("Error creating batch:", err);
-    return res.status(500).json({ error: "Server error" });
+    return res
+      .status(500)
+      .json({ error: "Server error", details: err.message });
   }
 }
 

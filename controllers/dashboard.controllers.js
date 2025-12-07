@@ -1,17 +1,6 @@
 // controllers/dashboard.controllers.js
 const prisma = require("../prisma/client");
 
-/**
- * GET /admin/dashboard/total-orders
- *
- * Default:
- *   - Counts only COMPLETED orders
- *
- * Optional query params:
- *   - storeId    → filter by store
- *   - startDate  → ISO date string (YYYY-MM-DD)
- *   - endDate    → ISO date string (YYYY-MM-DD)
- */
 async function getTotalOrders(req, res, next) {
   try {
     const { storeId, startDate, endDate } = req.query;
@@ -21,9 +10,9 @@ async function getTotalOrders(req, res, next) {
       status: "COMPLETED",
     };
 
-    // Optional: filter by storeId
-    if (storeId) {
-      where.storeId = storeId;
+    // Apply storeId from middleware (USER) or from admin query
+    if (req.storeId) {
+      where.storeId = req.storeId;
     }
 
     // Optional: filter by createdAt date range
@@ -37,7 +26,6 @@ async function getTotalOrders(req, res, next) {
     }
 
     if (endDate) {
-      // end of day handling (optional: you can just use new Date(endDate))
       const end = new Date(endDate);
       if (!isNaN(end)) {
         createdAtFilter.lte = end;
@@ -48,48 +36,30 @@ async function getTotalOrders(req, res, next) {
       where.createdAt = createdAtFilter;
     }
 
-    const totalOrders = await prisma.order.count({
-      where,
-    });
+    const totalOrders = await prisma.order.count({ where });
 
-    return res.json({
-      totalOrders,
-    });
+    return res.json({ totalOrders });
   } catch (error) {
     console.error("Error in getTotalOrders:", error);
     return next(error);
   }
 }
 
-/**
- * GET /admin/dashboard/total-product-types-sold
- *
- * Default:
- *   - Uses ONLY items from COMPLETED orders
- *
- * Optional query params:
- *   - storeId    → filter by store (via order.storeId)
- *   - startDate  → filter by order.createdAt >= startDate
- *   - endDate    → filter by order.createdAt <= endDate
- *
- * Response:
- *   - totalsByProductType: { [productType]: totalQuantitySold }
- *   - totalQuantitySold: number
- *   - distinctProductTypesSold: number
- */
 async function getTotalProductTypesSold(req, res, next) {
   try {
-    const { storeId, startDate, endDate } = req.query;
+    const { startDate, endDate } = req.query;
 
-    // Build order-level filter: only COMPLETED orders, plus optional store & date
+    // Build order-level filter: only COMPLETED orders
     const orderFilter = {
       status: "COMPLETED",
     };
 
-    if (storeId) {
-      orderFilter.storeId = storeId;
+    // Apply storeId coming from middleware (USER or ADMIN)
+    if (req.storeId) {
+      orderFilter.storeId = req.storeId;
     }
 
+    // Date filtering
     const createdAtFilter = {};
 
     if (startDate) {
@@ -110,18 +80,16 @@ async function getTotalProductTypesSold(req, res, next) {
       orderFilter.createdAt = createdAtFilter;
     }
 
-    // Apply the order filter via relation on orderItem
+    // OrderItem where filter via relation
     const orderItemWhere = {
       order: orderFilter,
     };
 
-    // Group order items by productId and sum quantities
+    // Grouping logic
     const groupedItems = await prisma.orderItem.groupBy({
       by: ["productId"],
       where: orderItemWhere,
-      _sum: {
-        quantity: true,
-      },
+      _sum: { quantity: true },
     });
 
     if (groupedItems.length === 0) {
@@ -134,13 +102,10 @@ async function getTotalProductTypesSold(req, res, next) {
 
     const productIds = groupedItems.map((g) => g.productId);
 
-    // Fetch productType for each product
+    // Fetch product types
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: {
-        id: true,
-        productType: true,
-      },
+      select: { id: true, productType: true },
     });
 
     const productTypeById = new Map(
@@ -158,12 +123,10 @@ async function getTotalProductTypesSold(req, res, next) {
       totalsByProductType[type] = (totalsByProductType[type] || 0) + qty;
     }
 
-    const distinctProductTypesSold = Object.keys(totalsByProductType).length;
-
     return res.json({
       totalsByProductType,
       totalQuantitySold,
-      distinctProductTypesSold,
+      distinctProductTypesSold: Object.keys(totalsByProductType).length,
     });
   } catch (error) {
     console.error("Error in getTotalProductTypesSold:", error);

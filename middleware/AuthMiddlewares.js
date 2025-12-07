@@ -25,4 +25,29 @@ function authWithRefresh(req, res, next) {
   });
 }
 
-module.exports = { authWithRefresh, requireRole };
+function attachStoreScope(req, res, next) {
+  const role = req.session.role;
+  const userStoreId = req.session.storeId;
+  const queryStoreId = req.query.storeId;
+
+  if (role === "USER") {
+    if (!userStoreId) {
+      return res.status(403).json({ error: "Store not assigned to this user" });
+    }
+
+    // Force user store, ignore query storeId
+    req.storeId = userStoreId;
+    return next();
+  }
+
+  // ADMIN: allow storeId from query, optional
+  if (role === "ADMIN") {
+    req.storeId = queryStoreId || null; // admin can filter or get all
+    return next();
+  }
+
+  // fallback if role not supported
+  return res.status(403).json({ error: "Unauthorized role" });
+}
+
+module.exports = { authWithRefresh, requireRole, attachStoreScope };

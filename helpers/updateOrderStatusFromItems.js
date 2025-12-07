@@ -167,8 +167,8 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
   // 🧠 Find earliest active stage based on defined priority
   const statusPriority = [
     "PENDING",
-    "WAITING_BATCH",
     "BATCHED",
+    "WAITING_BATCH",
     "DESIGNING",
     "DESIGNED",
     "PRINTING",

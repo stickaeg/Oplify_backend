@@ -2,13 +2,14 @@ const prisma = require("../prisma/client");
 
 async function createRule(req, res) {
   try {
-    const { name, isPod, requiresStock, storeName } = req.body;
+    const { name, variantTitle, isPod, requiresStock, storeName } = req.body;
 
     if (!name) return res.status(400).json({ error: "Missing rule name" });
     if (!storeName)
       return res.status(400).json({ error: "Missing store name" });
 
     const trimmedName = name.trim();
+    const trimmedVariantTitle = variantTitle?.trim();
 
     const store = await prisma.store.findFirst({
       where: { name: { equals: storeName.trim(), mode: "insensitive" } },
@@ -18,9 +19,11 @@ async function createRule(req, res) {
       return res.status(404).json({ error: `Store '${storeName}' not found` });
     }
 
+    // 🔍 1️⃣ Find existing rule (now checks variantTitle too)
     let rule = await prisma.productTypeRule.findFirst({
       where: {
         name: { equals: trimmedName, mode: "insensitive" },
+        variantTitle: trimmedVariantTitle || null, // 👈 Key change!
         storeId: store.id,
       },
     });
@@ -37,31 +40,35 @@ async function createRule(req, res) {
           data: dataToUpdate,
         });
 
-        // Update related products if needed
+        // Update related products
         await prisma.product.updateMany({
           where: {
             storeId: store.id,
             productType: { equals: rule.name, mode: "insensitive" },
           },
-          data: {
-            isPod: rule.isPod,
-            // optionally handle stock flags on products if relevant
-          },
+          data: { isPod: rule.isPod },
         });
       }
 
-      return res.status(200).json(rule);
+      return res.status(200).json({
+        ...rule,
+        storeName: store.name,
+        message: "Rule updated successfully",
+      });
     }
 
+    // 🆕 2️⃣ Create NEW rule with variantTitle
     rule = await prisma.productTypeRule.create({
       data: {
         name: trimmedName,
+        variantTitle: trimmedVariantTitle || null, // 👈 Store variant!
         isPod: !!isPod,
-        requiresStock: !!requiresStock,
+        requiresStock: !!requiresStock || false,
         storeId: store.id,
       },
     });
 
+    // 🔄 3️⃣ Update related products
     await prisma.product.updateMany({
       where: {
         storeId: store.id,
@@ -71,15 +78,19 @@ async function createRule(req, res) {
     });
 
     return res.status(201).json({
-      ...rule,
+      rule,
       storeName: store.name,
+      message: `Rule "${rule.name}"${
+        rule.variantTitle ? ` - ${rule.variantTitle}` : ""
+      } created + batch ready!`,
     });
   } catch (err) {
     console.error("Error creating rule:", err);
-    return res.status(500).json({ error: "Server error" });
+    return res
+      .status(500)
+      .json({ error: "Server error", details: err.message });
   }
 }
-
 // Update existing rule
 async function updateRule(req, res) {
   try {
@@ -107,16 +118,25 @@ async function updateRule(req, res) {
   }
 }
 
-// List rules
 async function listRules(req, res) {
   try {
+    const { isPod, requiresStock, storeId } = req.query;
+
+    // Build dynamic filter object
+    const where = {};
+    if (typeof isPod !== "undefined") where.isPod = isPod === "true";
+    if (typeof requiresStock !== "undefined")
+      where.requiresStock = requiresStock === "true";
+    if (storeId) where.storeId = storeId;
+
     const rules = await prisma.productTypeRule.findMany({
+      where,
       orderBy: { createdAt: "desc" },
       include: {
         store: {
           select: {
             id: true,
-            name: true, // 👈 get the store name
+            name: true,
           },
         },
       },
@@ -125,10 +145,12 @@ async function listRules(req, res) {
     return res.json(rules);
   } catch (err) {
     console.error(err);
-    return res.status(500).send("server error");
+    return res
+      .status(500)
+      .json({ error: "Server error", details: err.message });
   }
 }
-// Optional: Delete rule
+
 async function deleteRule(req, res) {
   try {
     const { id } = req.params;
@@ -229,11 +251,57 @@ async function listProductTypesByStore(req, res) {
   }
 }
 
+async function listVariantTitlesByProductType(req, res) {
+  try {
+    const { storeName, productType } = req.params;
+
+    if (!storeName)
+      return res.status(400).json({ error: "Missing store name" });
+    if (!productType)
+      return res.status(400).json({ error: "Missing product type" });
+
+    // 1️⃣ Find store by name (case-insensitive)
+    const store = await prisma.store.findFirst({
+      where: { name: { equals: storeName.trim(), mode: "insensitive" } },
+    });
+
+    if (!store)
+      return res.status(404).json({ error: `Store '${storeName}' not found` });
+
+    // 2️⃣ Get DISTINCT variant titles for this product type
+    const variants = await prisma.productVariant.findMany({
+      where: {
+        product: {
+          storeId: store.id,
+          productType: { equals: productType.trim(), mode: "insensitive" },
+        },
+        title: { not: null }, // Only variants with titles
+      },
+      select: { title: true },
+      distinct: ["title"], // 🔑 This eliminates redundancy
+      orderBy: { title: "asc" },
+    });
+
+    // 3️⃣ Clean response
+    const titles = variants.map((v) => v.title).filter(Boolean);
+
+    return res.json({
+      storeName: store.name,
+      productType,
+      variantTitles: titles,
+      totalUnique: titles.length,
+    });
+  } catch (err) {
+    console.error("Error listing variant titles:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 module.exports = {
   createRule,
   updateRule,
   listRules,
   deleteRule,
-
+  listVariantTitlesByProductType,
   listProductTypesByStore,
 };

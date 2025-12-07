@@ -5,12 +5,13 @@ const {
   updateOrderItemStatus,
   replaceUnit,
 } = require("../controllers/orders.controller");
+const { attachStoreScope } = require("../middleware/AuthMiddlewares");
 
 const router = express.Router();
 
-router.get("/", listOrders);
+router.get("/", attachStoreScope, listOrders);
 
-router.get("/:id", getOrderDetails);
+router.get("/:id", attachStoreScope, getOrderDetails);
 
 router.patch("/orderItems/:orderItemId/status", updateOrderItemStatus);
 

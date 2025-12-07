@@ -1,6 +1,7 @@
 const { createReplacementUnit } = require("../helpers/batchHelper");
 const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 const prisma = require("../prisma/client");
+const { adjustMainStock } = require("../util/mainStockHelper");
 const { autoUpdateBatchStatus } = require("./batches.controllers");
 
 async function listOrders(req, res) {
@@ -332,12 +333,12 @@ function determineOverallStatus(batchProgress) {
 async function updateOrderItemStatus(req, res) {
   try {
     const { orderItemId } = req.params;
-    const { status, unitIds } = req.body; // ✅ Accept array of unitIds
+    const { status, unitIds } = req.body;
 
     const validStatuses = [
       "PENDING",
-      "WAITING_BATCH",
       "BATCHED",
+      "WAITING_BATCH",
       "DESIGNING",
       "DESIGNED",
       "PRINTING",
@@ -345,6 +346,7 @@ async function updateOrderItemStatus(req, res) {
       "CUTTING",
       "CUT",
       "FULFILLMENT",
+      "FULFILLED",
       "PACKED",
       "COMPLETED",
       "RETURNED",
@@ -368,8 +370,54 @@ async function updateOrderItemStatus(req, res) {
     }
 
     await prisma.$transaction(async (tx) => {
-      // ✅ Update specific units (partial fulfillment)
+      console.log("✅ STOCK PATH - updating item directly"); // 👈 ADD
+      // 👇 NEW: STOCK orders (no BatchItem)
+      if (!orderItem.BatchItem || orderItem.BatchItem.length === 0) {
+        await tx.orderItem.update({
+          where: { id: orderItemId },
+          data: { status },
+        });
+
+        // MainStock adjustment
+        const updatedOrderItem = await tx.orderItem.findUnique({
+          where: { id: orderItemId },
+          include: {
+            product: true,
+            variant: true,
+            order: { include: { store: true } },
+          },
+        });
+
+        if (updatedOrderItem) {
+          const finalStatus = updatedOrderItem.status;
+          if (finalStatus === "FULFILLED") {
+            await adjustMainStock(
+              tx,
+              updatedOrderItem.product.productType,
+              updatedOrderItem.variant?.title,
+              updatedOrderItem.order.storeId,
+              updatedOrderItem.quantity,
+              "decrement"
+            );
+          } else if (finalStatus === "RETURNED") {
+            await adjustMainStock(
+              tx,
+              updatedOrderItem.product.productType,
+              updatedOrderItem.variant?.title,
+              updatedOrderItem.order.storeId,
+              updatedOrderItem.quantity,
+              "increment"
+            );
+          }
+        }
+
+        await updateOrderStatusFromItems(orderItem.orderId, tx);
+        return; // 👈 EXIT EARLY - no batches to update
+      }
+
+      // 👇 EXISTING: POD orders with units/batches
       if (unitIds && Array.isArray(unitIds) && unitIds.length > 0) {
+        // Partial fulfillment - update specific units
         await tx.batchItemUnit.updateMany({
           where: {
             id: { in: unitIds },
@@ -411,7 +459,7 @@ async function updateOrderItemStatus(req, res) {
           data: { status: orderItemStatus },
         });
       } else {
-        // ✅ Bulk update all units
+        // Bulk update all units
         const batchItemIds = orderItem.BatchItem.map((bi) => bi.id);
 
         await tx.batchItemUnit.updateMany({
@@ -428,6 +476,39 @@ async function updateOrderItemStatus(req, res) {
           where: { id: orderItemId },
           data: { status },
         });
+      }
+
+      // 👇 MainStock adjustment for POD orders (after status updates)
+      const updatedOrderItem = await tx.orderItem.findUnique({
+        where: { id: orderItemId },
+        include: {
+          product: true,
+          variant: true,
+          order: { include: { store: true } },
+        },
+      });
+
+      if (updatedOrderItem) {
+        const finalStatus = updatedOrderItem.status;
+        if (finalStatus === "FULFILLED") {
+          await adjustMainStock(
+            tx,
+            updatedOrderItem.product.productType,
+            updatedOrderItem.variant?.title,
+            updatedOrderItem.order.storeId,
+            updatedOrderItem.quantity,
+            "decrement"
+          );
+        } else if (finalStatus === "RETURNED") {
+          await adjustMainStock(
+            tx,
+            updatedOrderItem.product.productType,
+            updatedOrderItem.variant?.title,
+            updatedOrderItem.order.storeId,
+            updatedOrderItem.quantity,
+            "increment"
+          );
+        }
       }
 
       // Update batch statuses
@@ -508,15 +589,15 @@ function deriveStatusFromUnits(statuses) {
   // Priority: most advanced status wins
   const statusPriority = [
     "COMPLETED",
+    "BATCHED",
     "PACKED",
     "FULFILLMENT",
+    "DESIGNING",
     "CUT",
     "CUTTING",
     "PRINTED",
     "PRINTING",
     "DESIGNED",
-    "DESIGNING",
-    "BATCHED",
     "WAITING_BATCH",
     "PENDING",
     "RETURNED",
