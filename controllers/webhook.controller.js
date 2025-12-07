@@ -252,7 +252,7 @@ async function handleOrderCreate(req, res) {
         const productRule = await tx.productTypeRule.findFirst({
           where: {
             storeId: store.id,
-            name: product.productType,
+            ...(product.productType && { name: product.productType }),
             variantTitle: item.variant_title || null,
           },
         });

@@ -14,6 +14,7 @@ const batchesRoutes = require("./routes/batchesRoutes");
 const webhooksRoutes = require("./routes/webhooksRoutes");
 const googleRoutes = require("./routes/googleRoutes");
 const scanRoutes = require("./routes/scanRoutes");
+const inventoryRoutes = require("./routes/inventoryRoutes");
 
 const {
   authWithRefresh,
