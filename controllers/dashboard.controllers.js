@@ -1,13 +1,24 @@
 // controllers/dashboard.controllers.js
 const prisma = require("../prisma/client");
 
+/**
+ * GET /admin/dashboard/total-orders
+ *
+ * Default:
+ *   - Counts only COMPLETED orders
+ *
+ * Optional query params:
+ *   - storeId    → filter by store
+ *   - startDate  → ISO date string (YYYY-MM-DD)
+ *   - endDate    → ISO date string (YYYY-MM-DD)
+ */
 async function getTotalOrders(req, res, next) {
   try {
     const { storeId, startDate, endDate } = req.query;
 
-    // Base filter: only COMPLETED orders
+    // Base filter: only FULFILLED orders
     const where = {
-      status: "COMPLETED",
+      status: "FULFILLED",
     };
 
     // Apply storeId from middleware (USER) or from admin query
@@ -45,13 +56,29 @@ async function getTotalOrders(req, res, next) {
   }
 }
 
+/**
+ * GET /admin/dashboard/total-product-types-sold
+ *
+ * Default:
+ *   - Uses ONLY items from COMPLETED orders
+ *
+ * Optional query params:
+ *   - storeId    → filter by store (via order.storeId)
+ *   - startDate  → filter by order.createdAt >= startDate
+ *   - endDate    → filter by order.createdAt <= endDate
+ *
+ * Response:
+ *   - totalsByProductType: { [productType]: totalQuantitySold }
+ *   - totalQuantitySold: number
+ *   - distinctProductTypesSold: number
+ */
 async function getTotalProductTypesSold(req, res, next) {
   try {
     const { startDate, endDate } = req.query;
 
-    // Build order-level filter: only COMPLETED orders
+    // Build order-level filter: only COMPLETED orders, plus optional store & date
     const orderFilter = {
-      status: "COMPLETED",
+      status: "FULFILLED",
     };
 
     // Apply storeId coming from middleware (USER or ADMIN)

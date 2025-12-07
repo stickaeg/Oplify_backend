@@ -283,6 +283,7 @@ async function updateBatchStatus(req, res) {
       "REDESIGN",
       "CUT",
       "FULFILLMENT",
+      "FULFILLED",
       "PACKED",
       "COMPLETED",
       "CANCELLED",
