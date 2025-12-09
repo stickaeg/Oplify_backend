@@ -361,7 +361,10 @@ async function updateOrderItemStatus(req, res) {
       where: { id: orderItemId },
       include: {
         order: true,
+        product: true,
+        variant: true,
         BatchItem: { include: { units: true, batch: true } },
+        stockReservation: true,
       },
     });
 
@@ -370,63 +373,27 @@ async function updateOrderItemStatus(req, res) {
     }
 
     await prisma.$transaction(async (tx) => {
-      console.log("✅ STOCK PATH - updating item directly"); // 👈 ADD
-      // 👇 NEW: STOCK orders (no BatchItem)
-      if (!orderItem.BatchItem || orderItem.BatchItem.length === 0) {
-        await tx.orderItem.update({
-          where: { id: orderItemId },
-          data: { status },
-        });
-
-        // MainStock adjustment
-        const updatedOrderItem = await tx.orderItem.findUnique({
-          where: { id: orderItemId },
-          include: {
-            product: true,
-            variant: true,
-            order: { include: { store: true } },
-          },
-        });
-
-        if (updatedOrderItem) {
-          const finalStatus = updatedOrderItem.status;
-          if (finalStatus === "FULFILLED") {
-            await adjustMainStock(
-              tx,
-              updatedOrderItem.product.productType,
-              updatedOrderItem.variant?.title,
-              updatedOrderItem.order.storeId,
-              updatedOrderItem.quantity,
-              "decrement"
-            );
-          } else if (finalStatus === "RETURNED") {
-            await adjustMainStock(
-              tx,
-              updatedOrderItem.product.productType,
-              updatedOrderItem.variant?.title,
-              updatedOrderItem.order.storeId,
-              updatedOrderItem.quantity,
-              "increment"
-            );
-          }
+      // -----------------------------
+      // 1️⃣ Update OrderItem / BatchItem / Units
+      // -----------------------------
+      if (orderItem.BatchItem && orderItem.BatchItem.length > 0) {
+        // POD order
+        if (unitIds && Array.isArray(unitIds) && unitIds.length > 0) {
+          // Partial fulfillment
+          await tx.batchItemUnit.updateMany({
+            where: { id: { in: unitIds }, batchItem: { orderItemId } },
+            data: { status },
+          });
+        } else {
+          // Full fulfillment - update all units
+          const batchItemIds = orderItem.BatchItem.map((bi) => bi.id);
+          await tx.batchItemUnit.updateMany({
+            where: { batchItemId: { in: batchItemIds } },
+            data: { status },
+          });
         }
 
-        await updateOrderStatusFromItems(orderItem.orderId, tx);
-        return; // 👈 EXIT EARLY - no batches to update
-      }
-
-      // 👇 EXISTING: POD orders with units/batches
-      if (unitIds && Array.isArray(unitIds) && unitIds.length > 0) {
-        // Partial fulfillment - update specific units
-        await tx.batchItemUnit.updateMany({
-          where: {
-            id: { in: unitIds },
-            batchItem: { orderItemId },
-          },
-          data: { status },
-        });
-
-        // Recalculate BatchItem statuses based on their units
+        // Recalculate BatchItem status
         const affectedBatchItems = await tx.batchItem.findMany({
           where: { orderItemId },
           include: { units: true },
@@ -435,7 +402,6 @@ async function updateOrderItemStatus(req, res) {
         for (const batchItem of affectedBatchItems) {
           const unitStatuses = batchItem.units.map((u) => u.status);
           const derivedStatus = deriveStatusFromUnits(unitStatuses);
-
           await tx.batchItem.update({
             where: { id: batchItem.id },
             data: { status: derivedStatus },
@@ -444,12 +410,9 @@ async function updateOrderItemStatus(req, res) {
 
         // Recalculate OrderItem status
         const allUnits = await tx.batchItemUnit.findMany({
-          where: {
-            batchItem: { orderItemId },
-          },
+          where: { batchItem: { orderItemId } },
           select: { status: true },
         });
-
         const orderItemStatus = deriveStatusFromUnits(
           allUnits.map((u) => u.status)
         );
@@ -459,26 +422,16 @@ async function updateOrderItemStatus(req, res) {
           data: { status: orderItemStatus },
         });
       } else {
-        // Bulk update all units
-        const batchItemIds = orderItem.BatchItem.map((bi) => bi.id);
-
-        await tx.batchItemUnit.updateMany({
-          where: { batchItemId: { in: batchItemIds } },
-          data: { status },
-        });
-
-        await tx.batchItem.updateMany({
-          where: { id: { in: batchItemIds } },
-          data: { status },
-        });
-
+        // Normal stock order - just update order item
         await tx.orderItem.update({
           where: { id: orderItemId },
           data: { status },
         });
       }
 
-      // 👇 MainStock adjustment for POD orders (after status updates)
+      // -----------------------------
+      // 2️⃣ Adjust ProductStockQuantity
+      // -----------------------------
       const updatedOrderItem = await tx.orderItem.findUnique({
         where: { id: orderItemId },
         include: {
@@ -490,50 +443,81 @@ async function updateOrderItemStatus(req, res) {
 
       if (updatedOrderItem) {
         const finalStatus = updatedOrderItem.status;
-        if (finalStatus === "FULFILLED") {
-          await adjustMainStock(
-            tx,
-            updatedOrderItem.product.productType,
-            updatedOrderItem.variant?.title,
-            updatedOrderItem.order.storeId,
-            updatedOrderItem.quantity,
-            "decrement"
-          );
-        } else if (finalStatus === "RETURNED") {
-          await adjustMainStock(
-            tx,
-            updatedOrderItem.product.productType,
-            updatedOrderItem.variant?.title,
-            updatedOrderItem.order.storeId,
-            updatedOrderItem.quantity,
-            "increment"
-          );
+
+        if (["FULFILLED", "RETURNED"].includes(finalStatus)) {
+          const action =
+            finalStatus === "FULFILLED" ? "decrement" : "increment";
+
+          // Get rules matching product type & variant
+          const rules = await tx.productTypeRule.findMany({
+            where: {
+              storeId: updatedOrderItem.order.storeId,
+              name: updatedOrderItem.product.productType,
+              variantTitle: updatedOrderItem.variant?.title,
+            },
+            include: { mainStocks: true },
+          });
+
+          for (const rule of rules) {
+            for (const mainStock of rule.mainStocks) {
+              // Update ProductStockQuantity for each mainStock + SKU
+              const stockRecord = await tx.productStockQuantity.findUnique({
+                where: {
+                  mainStockId_sku: {
+                    mainStockId: mainStock.id,
+                    sku:
+                      updatedOrderItem.variant?.sku ||
+                      updatedOrderItem.product.sku, // Use actual SKU
+                  },
+                },
+              });
+
+              if (!stockRecord) continue;
+
+              const newQty =
+                action === "decrement"
+                  ? stockRecord.quantity - updatedOrderItem.quantity
+                  : stockRecord.quantity + updatedOrderItem.quantity;
+
+              await tx.productStockQuantity.update({
+                where: { id: stockRecord.id },
+                data: { quantity: newQty, updatedAt: new Date() },
+              });
+            }
+          }
         }
       }
 
-      // Update batch statuses
-      const batchIds = [
-        ...new Set(orderItem.BatchItem.map((bi) => bi.batchId)),
-      ];
+      // -----------------------------
+      // 3️⃣ Update Batch status if POD
+      // -----------------------------
+      if (orderItem.BatchItem && orderItem.BatchItem.length > 0) {
+        const batchIds = [
+          ...new Set(orderItem.BatchItem.map((bi) => bi.batchId)),
+        ];
 
-      for (const batchId of batchIds) {
-        const batchItems = await tx.batchItem.findMany({
-          where: { batchId },
-          include: { units: true },
-        });
+        for (const batchId of batchIds) {
+          const batchItems = await tx.batchItem.findMany({
+            where: { batchId },
+            include: { units: true },
+          });
 
-        const allUnitStatuses = batchItems.flatMap((bi) =>
-          bi.units.map((u) => u.status)
-        );
+          const allUnitStatuses = batchItems.flatMap((bi) =>
+            bi.units.map((u) => u.status)
+          );
 
-        const batchStatus = deriveStatusFromUnits(allUnitStatuses);
+          const batchStatus = deriveStatusFromUnits(allUnitStatuses);
 
-        await tx.batch.update({
-          where: { id: batchId },
-          data: { status: batchStatus },
-        });
+          await tx.batch.update({
+            where: { id: batchId },
+            data: { status: batchStatus },
+          });
+        }
       }
 
+      // -----------------------------
+      // 4️⃣ Update overall Order status
+      // -----------------------------
       await updateOrderStatusFromItems(orderItem.orderId, tx);
     });
 

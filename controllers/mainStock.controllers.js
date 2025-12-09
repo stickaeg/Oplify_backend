@@ -193,19 +193,21 @@ async function deleteMainStock(req, res) {
 
 // ===================== ASSIGN PRODUCT QUANTITY (SKU BASED) =====================
 async function assignProductQuantity(req, res) {
-  const { mainStockId } = req.params;
-  const { sku, quantity } = req.body;
-
   try {
+    const { mainStockId } = req.params;
+    const { sku, quantity } = req.body;
+
+    if (!sku) return res.status(400).json({ error: "SKU is required" });
+
     await prisma.productStockQuantity.upsert({
       where: { mainStockId_sku: { mainStockId, sku } },
       create: { mainStockId, sku, quantity },
       update: { quantity },
     });
 
-    return res.json({ success: true });
+    return res.json({ success: true, sku, quantity });
   } catch (err) {
-    console.error(err);
+    console.error("assignProductQuantity error:", err);
     return res.status(500).json({ error: err.message });
   }
 }
@@ -216,22 +218,12 @@ async function listProductQuantities(req, res) {
 
     const quantities = await prisma.productStockQuantity.findMany({
       where: { mainStockId },
-      include: {
-        productVariant: {
-          select: {
-            id: true,
-            sku: true, // <--- Include SKU
-            title: true,
-            price: true,
-          },
-        },
-      },
       orderBy: { createdAt: "desc" },
     });
 
     return res.json(quantities);
   } catch (err) {
-    console.error("Error listing product quantities:", err);
+    console.error("listProductQuantities error:", err);
     return res.status(500).json({ error: err.message });
   }
 }
@@ -241,26 +233,13 @@ async function deleteProductQuantity(req, res) {
   try {
     const { mainStockId, sku } = req.params;
 
-    // Find variant by SKU
-    const variant = await prisma.productVariant.findUnique({
-      where: { sku },
-    });
-
-    if (!variant)
-      return res.status(404).json({ error: `SKU not found: ${sku}` });
-
     await prisma.productStockQuantity.delete({
-      where: {
-        productVariantId_mainStockId: {
-          productVariantId: variant.id,
-          mainStockId,
-        },
-      },
+      where: { mainStockId_sku: { mainStockId, sku } },
     });
 
-    return res.json({ message: "Quantity removed for SKU" });
+    return res.json({ message: `Quantity for SKU ${sku} removed.` });
   } catch (err) {
-    console.error("Error deleting product quantity:", err);
+    console.error("deleteProductQuantity error:", err);
     return res.status(500).json({ error: err.message });
   }
 }
@@ -270,7 +249,7 @@ async function getProductsByMainStock(req, res) {
   try {
     const { mainStockId } = req.params;
 
-    // Get rules for this main stock
+    // 1. Get main stock + rules
     const mainStock = await prisma.mainStock.findUnique({
       where: { id: mainStockId },
       include: { rules: true },
@@ -281,64 +260,71 @@ async function getProductsByMainStock(req, res) {
 
     const ruleNames = mainStock.rules.map((r) => r.name);
 
-    // Get all products whose productType matches the main stock rules
+    // 2. Get all products across all stores matching main stock rules
     const products = await prisma.product.findMany({
       where: { productType: { in: ruleNames } },
       include: {
-        variants: true, // get all product variants
-        store: true, // include store info if needed
+        store: true,
+        variants: true,
       },
     });
 
-    // Fetch existing stock quantities
-    const quantities = await prisma.productStockQuantity.findMany({
+    // 3. Get assigned quantities (SKU-based)
+    const quantityRows = await prisma.productStockQuantity.findMany({
       where: { mainStockId },
     });
 
-    // Flatten all variants, attach quantity, and filter out those without SKU
-    const flattened = products.flatMap((p) =>
-      p.variants
-        .filter((v) => v.sku)
-        .map((v) => {
-          const qty = quantities.find((q) => q.productVariantId === v.id);
-          return {
-            sku: v.sku,
-            productName: p.title,
-            variantTitle: v.title,
-            storeId: p.storeId,
-            storeName: p.store?.name || "Unknown",
-            quantity: qty ? qty.quantity : 0,
-          };
-        })
+    // Map: sku -> quantity
+    const quantityMap = Object.fromEntries(
+      quantityRows.map((q) => [q.sku, q.quantity])
     );
 
-    // Merge variants by SKU and sum quantities
+    // 4. Flatten all variants → enrich with store quantities
+    const flattened = products.flatMap((p) =>
+      p.variants
+        .filter((v) => v.sku) // only SKU variants
+        .map((v) => ({
+          sku: v.sku,
+          productName: p.title,
+          variantTitle: v.title,
+          storeId: p.storeId,
+          storeName: p.store?.name || "Unknown",
+          quantity: quantityMap[v.sku] || 0,
+        }))
+    );
+
+    // 5. Merge quantities by SKU
     const merged = Object.values(
       flattened.reduce((acc, item) => {
         if (!acc[item.sku]) {
-          acc[item.sku] = { ...item };
-        } else {
-          acc[item.sku].quantity += item.quantity;
+          acc[item.sku] = {
+            sku: item.sku,
+            productName: item.productName,
+            totalQuantity: quantityMap[item.sku] || 0, // USE THE STOCK QTY ONCE
+            stores: [],
+          };
         }
+
+        acc[item.sku].stores.push({
+          storeId: item.storeId,
+          storeName: item.storeName,
+          // optional: you can omit quantity here or keep for display per store
+          quantity: 0,
+        });
+
         return acc;
       }, {})
     );
 
     return res.json(merged);
   } catch (err) {
-    console.error(err);
-    return res
-      .status(500)
-      .json({ error: "Server error", details: err.message });
+    console.error("getProductsByMainStock error:", err);
+    return res.status(500).json({ error: err.message });
   }
 }
 
 module.exports = {
-  // ...other controllers
   getProductsByMainStock,
-};
-
-module.exports = {
   createMainStock,
   listMainStock,
   getMainStockById,
