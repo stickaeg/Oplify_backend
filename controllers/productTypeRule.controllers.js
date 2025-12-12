@@ -61,7 +61,7 @@ async function createRule(req, res) {
     rule = await prisma.productTypeRule.create({
       data: {
         name: trimmedName,
-        variantTitle: trimmedVariantTitle || null, // 👈 Store variant!
+        variantTitle: trimmedVariantTitle || null, 
         isPod: !!isPod,
         requiresStock: !!requiresStock || false,
         storeId: store.id,

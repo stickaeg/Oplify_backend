@@ -249,16 +249,19 @@ async function handleOrderCreate(req, res) {
           },
         });
 
+        // inside handleOrderCreate loop
         const productRule = await tx.productTypeRule.findFirst({
           where: {
             storeId: store.id,
-            ...(product.productType && { name: product.productType }),
-            variantTitle: item.variant_title || null,
+            name: { equals: product.productType, mode: "insensitive" },
+            OR: [
+              { variantTitle: item.variant_title || undefined },
+              { variantTitle: null },
+            ],
           },
         });
 
-        // Default flags for safety
-        const requiresStock = productRule?.requiresStock || false;
+        const requiresStock = productRule?.requiresStock === true;
 
         // Prepare order item create data; will add stockReservationId if applicable
         const orderItemData = {
@@ -277,59 +280,44 @@ async function handleOrderCreate(req, res) {
         });
 
         if (requiresStock && variant) {
-          // Find StockVariant via ProductStockMapping
-          const stockMapping = await tx.productStockMapping.findFirst({
-            where: { productVariantId: variant.id },
-          });
+          const variantTitle = item.variant_title || variant.title || null;
+          console.log(
+            `Processing stock decrement for variantTitle: ${variantTitle}`
+          );
 
-          if (!stockMapping) {
+          if (!variantTitle) {
             console.warn(
-              `⚠️ No stock mapping for ProductVariant ${variant.id}`
+              `⚠️ No variant title for ProductVariant ${variant.id}, cannot map to StockVariant`
             );
           } else {
-            const stockVariant = await tx.stockVariant.findUnique({
-              where: { id: stockMapping.stockVariantId },
+            const stockVariant = await tx.stockVariant.findFirst({
+              where: { variantTitle },
             });
 
-            if (!stockVariant || stockVariant.currentStock < item.quantity) {
-              throw new Error(
-                `Insufficient stock for ${
-                  stockVariant?.name || "unknown variant"
-                }`
+            if (!stockVariant) {
+              console.warn(
+                `⚠️ No StockVariant found for variantTitle "${variantTitle}"`
               );
+            } else {
+              const qty = item.quantity;
+
+              // Optional guard, or remove if you don't care about negative
+              if (stockVariant.currentStock < qty) {
+                throw new Error(
+                  `Insufficient stock for ${stockVariant.name} (have ${stockVariant.currentStock}, need ${qty})`
+                );
+              }
+
+              // Just decrement stock, no StockMovement
+              await tx.stockVariant.update({
+                where: { id: stockVariant.id },
+                data: {
+                  currentStock: {
+                    decrement: qty,
+                  },
+                },
+              });
             }
-
-            // Create StockReservation
-            await tx.stockReservation.create({
-              data: {
-                stockVariantId: stockVariant.id,
-                orderItemId: createdOrderItem.id,
-                quantity: item.quantity,
-                status: "RESERVED",
-                reservedAt: new Date(),
-              },
-            });
-
-            // Update StockVariant decrementing currentStock
-            await tx.stockVariant.update({
-              where: { id: stockVariant.id },
-              data: {
-                currentStock: stockVariant.currentStock - item.quantity,
-              },
-            });
-
-            // Record stock movement
-            await tx.stockMovement.create({
-              data: {
-                stockVariantId: stockVariant.id,
-                type: "SALE",
-                quantity: item.quantity,
-                previousStock: stockVariant.currentStock,
-                newStock: stockVariant.currentStock - item.quantity,
-                orderItemId: createdOrderItem.id,
-                reason: "Order Reservation",
-              },
-            });
           }
         }
 

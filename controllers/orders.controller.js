@@ -460,14 +460,14 @@ async function updateOrderItemStatus(req, res) {
 
           for (const rule of rules) {
             for (const mainStock of rule.mainStocks) {
-              // Update ProductStockQuantity for each mainStock + SKU
+             
               const stockRecord = await tx.productStockQuantity.findUnique({
                 where: {
                   mainStockId_sku: {
                     mainStockId: mainStock.id,
                     sku:
                       updatedOrderItem.variant?.sku ||
-                      updatedOrderItem.product.sku, // Use actual SKU
+                      updatedOrderItem.product.sku, 
                   },
                 },
               });

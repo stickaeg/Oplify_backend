@@ -90,22 +90,44 @@ exports.createStockVariant = async (req, res) => {
       currentStock,
       minStockLevel,
       maxStockLevel,
+      // new fields (can be single string or array, see normalization below)
+      storeIds,
+      productTypes,
+      variantTitles,
     } = req.body;
 
-    console.log(req.body);
-
-    if (!stockItemId || !sku || !name)
+    if (!stockItemId || !sku || !name) {
       return res
         .status(400)
         .json({ error: "stockItemId, SKU, and name are required" });
+    }
 
     const variantExists = await prisma.stockVariant.findUnique({
       where: { sku },
     });
-    if (variantExists)
+    if (variantExists) {
       return res
         .status(409)
         .json({ error: "StockVariant with this SKU exists" });
+    }
+
+    // Normalize to arrays so you can accept both single string and array from the client
+    const normStoreIds =
+      storeIds == null ? [] : Array.isArray(storeIds) ? storeIds : [storeIds];
+
+    const normProductTypes =
+      productTypes == null
+        ? []
+        : Array.isArray(productTypes)
+        ? productTypes
+        : [productTypes];
+
+    const normVariantTitles =
+      variantTitles == null
+        ? []
+        : Array.isArray(variantTitles)
+        ? variantTitles
+        : [variantTitles];
 
     const variant = await prisma.stockVariant.create({
       data: {
@@ -114,12 +136,28 @@ exports.createStockVariant = async (req, res) => {
         name,
         color,
         size,
-        currentStock: currentStock || 0,
-        minStockLevel: minStockLevel || 5,
-        maxStockLevel,
+        currentStock: currentStock ?? 0,
+        minStockLevel: minStockLevel ?? 5,
+        maxStockLevel: maxStockLevel ?? null,
+        storeIds: normStoreIds,
+        productTypes: normProductTypes,
+        variantTitles: normVariantTitles,
       },
     });
+
     res.status(201).json(variant);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+exports.getStockVariants = async (_, res) => {
+  try {
+    const variants = await prisma.stockVariant.findMany({
+      include: { stockItem: true },
+    });
+    res.json(variants);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Internal server error" });
@@ -157,11 +195,50 @@ exports.getStockVariantById = async (req, res) => {
 exports.updateStockVariant = async (req, res) => {
   try {
     const { id } = req.params;
-    const data = req.body;
+    const {
+      stockItemId,
+      sku,
+      name,
+      color,
+      size,
+      currentStock,
+      minStockLevel,
+      maxStockLevel,
+      storeIds,
+      productTypes,
+      variantTitles,
+    } = req.body;
+
+    const data = {};
+
+    if (stockItemId !== undefined) data.stockItemId = stockItemId;
+    if (sku !== undefined) data.sku = sku;
+    if (name !== undefined) data.name = name;
+    if (color !== undefined) data.color = color;
+    if (size !== undefined) data.size = size;
+    if (currentStock !== undefined) data.currentStock = currentStock;
+    if (minStockLevel !== undefined) data.minStockLevel = minStockLevel;
+    if (maxStockLevel !== undefined) data.maxStockLevel = maxStockLevel;
+
+    if (storeIds !== undefined) {
+      data.storeIds = Array.isArray(storeIds) ? storeIds : [storeIds];
+    }
+    if (productTypes !== undefined) {
+      data.productTypes = Array.isArray(productTypes)
+        ? productTypes
+        : [productTypes];
+    }
+    if (variantTitles !== undefined) {
+      data.variantTitles = Array.isArray(variantTitles)
+        ? variantTitles
+        : [variantTitles];
+    }
+
     const updated = await prisma.stockVariant.update({
       where: { id },
       data,
     });
+
     res.json(updated);
   } catch (error) {
     console.error(error);
@@ -174,61 +251,6 @@ exports.deleteStockVariant = async (req, res) => {
     const { id } = req.params;
     await prisma.stockVariant.delete({ where: { id } });
     res.json({ message: "StockVariant deleted" });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-};
-
-// ProductStockMapping Controllers
-
-exports.createProductStockMapping = async (req, res) => {
-  try {
-    const { productVariantId, stockVariantId, quantityRequired } = req.body;
-    if (!productVariantId || !stockVariantId)
-      return res
-        .status(400)
-        .json({ error: "productVariantId and stockVariantId required" });
-
-    const mappingExists = await prisma.productStockMapping.findFirst({
-      where: { productVariantId, stockVariantId },
-    });
-    if (mappingExists)
-      return res.status(409).json({
-        error: "Mapping already exists for this product and stock variant",
-      });
-
-    const mapping = await prisma.productStockMapping.create({
-      data: {
-        productVariantId,
-        stockVariantId,
-        quantityRequired: quantityRequired || 1,
-      },
-    });
-    res.status(201).json(mapping);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-};
-
-exports.getProductStockMappings = async (_, res) => {
-  try {
-    const mappings = await prisma.productStockMapping.findMany({
-      include: { productVariant: true, stockVariant: true },
-    });
-    res.json(mappings);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-};
-
-exports.deleteProductStockMapping = async (req, res) => {
-  try {
-    const { id } = req.params;
-    await prisma.productStockMapping.delete({ where: { id } });
-    res.json({ message: "Mapping deleted" });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Internal server error" });

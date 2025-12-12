@@ -314,7 +314,9 @@ model StockVariant {
   minStockLevel Int             @default(5)
   maxStockLevel Int?
 
-  variantTitle  String?   
+  storeIds       String[]   
+  productTypes   String[]
+  variantTitles  String[]   
 
   
   reservations  StockReservation[]
@@ -325,8 +327,6 @@ model StockVariant {
   
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
-
-  @@index([variantTitle])
 
 }
 

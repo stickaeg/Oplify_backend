@@ -274,18 +274,18 @@ async function getProductsByMainStock(req, res) {
       where: { mainStockId },
     });
 
-    // Map: sku -> quantity
     const quantityMap = Object.fromEntries(
       quantityRows.map((q) => [q.sku, q.quantity])
     );
 
-    // 4. Flatten all variants → enrich with store quantities
+    // 4. Flatten all variants → enrich with store quantities + img
     const flattened = products.flatMap((p) =>
       p.variants
-        .filter((v) => v.sku) // only SKU variants
+        .filter((v) => v.sku)
         .map((v) => ({
           sku: v.sku,
           productName: p.title,
+          productImgUrl: p.imgUrl, // <── carry product image here
           variantTitle: v.title,
           storeId: p.storeId,
           storeName: p.store?.name || "Unknown",
@@ -300,7 +300,8 @@ async function getProductsByMainStock(req, res) {
           acc[item.sku] = {
             sku: item.sku,
             productName: item.productName,
-            totalQuantity: quantityMap[item.sku] || 0, // USE THE STOCK QTY ONCE
+            productImgUrl: item.productImgUrl, // <── keep it on the merged object
+            totalQuantity: quantityMap[item.sku] || 0,
             stores: [],
           };
         }
@@ -308,7 +309,6 @@ async function getProductsByMainStock(req, res) {
         acc[item.sku].stores.push({
           storeId: item.storeId,
           storeName: item.storeName,
-          // optional: you can omit quantity here or keep for display per store
           quantity: 0,
         });
 

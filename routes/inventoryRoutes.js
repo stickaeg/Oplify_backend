@@ -17,15 +17,4 @@ router.get("/stock-variants/:id", stockController.getStockVariantById);
 router.put("/stock-variants/:id", stockController.updateStockVariant);
 router.delete("/stock-variants/:id", stockController.deleteStockVariant);
 
-// ProductStockMapping routes
-router.post(
-  "/product-stock-mappings",
-  stockController.createProductStockMapping
-);
-router.get("/product-stock-mappings", stockController.getProductStockMappings);
-router.delete(
-  "/product-stock-mappings/:id",
-  stockController.deleteProductStockMapping
-);
-
 module.exports = router;

@@ -36,10 +36,19 @@ async function assignOrderItemsToBatches(orderItems) {
     // 4️⃣ Get product rule matching productType and variantTitle
     const rule = await prisma.productTypeRule.findFirst({
       where: {
-        name: { equals: product.productType, mode: "insensitive" },
         storeId: product.storeId,
-        variantTitle: variantTitle, // Variant title used here for matching
+        name: { equals: product.productType, mode: "insensitive" },
+        OR: [
+          { variantTitle: variantTitle || undefined }, // exact variant
+          { variantTitle: null }, // generic rule
+        ],
       },
+    });
+
+    console.log("Batch rule lookup", {
+      productType: product.productType,
+      variantTitle,
+      rule,
     });
 
     if (!rule) {
@@ -53,7 +62,6 @@ async function assignOrderItemsToBatches(orderItems) {
     const needsStockHandling = rule.requiresStock === true;
     const isPod = rule.isPod === true;
 
-    // Skip if product is neither POD nor requires stock (no batch needed)
     if (!isPod && !needsStockHandling) {
       console.log(
         `🚫 Skipping item ${item.id}: neither POD nor stock required`
@@ -153,6 +161,60 @@ async function assignOrderItemsToBatches(orderItems) {
           where: { id: item.id },
           data: { status: "WAITING_BATCH" },
         });
+
+        // 🔁 UPDATED: stock lookup now uses array fields
+        if (needsStockHandling) {
+          const variantForStock = item.variantId
+            ? await tx.productVariant.findUnique({
+                where: { id: item.variantId },
+                include: {
+                  product: {
+                    include: {
+                      store: true,
+                    },
+                  },
+                },
+              })
+            : null;
+
+          const variantTitleForStock = variantForStock?.title || null;
+          const storeNameForStock = variantForStock?.product.store.name || null;
+          const productTypeForStock =
+            variantForStock?.product.productType || null;
+
+          if (
+            variantTitleForStock &&
+            storeNameForStock &&
+            productTypeForStock
+          ) {
+            const stockVariant = await tx.stockVariant.findFirst({
+              where: {
+                variantTitles: { has: variantTitleForStock },
+                storeIds: { has: storeNameForStock },
+                productTypes: { has: productTypeForStock },
+              },
+            });
+
+            if (!stockVariant) {
+              console.warn(
+                `⚠️ No StockVariant found for store "${storeNameForStock}", productType "${productTypeForStock}", variantTitle "${variantTitleForStock}"`
+              );
+            } else {
+              if (stockVariant.currentStock < quantityToAdd) {
+                throw new Error(
+                  `Insufficient stock for ${stockVariant.name} (have ${stockVariant.currentStock}, need ${quantityToAdd})`
+                );
+              }
+
+              await tx.stockVariant.update({
+                where: { id: stockVariant.id },
+                data: {
+                  currentStock: { decrement: quantityToAdd },
+                },
+              });
+            }
+          }
+        }
 
         await updateOrderStatusFromItems(orderItem.orderId, tx);
       });
