@@ -52,27 +52,27 @@ async function listMainStock(req, res) {
     const mainStocks = await prisma.mainStock.findMany({
       where: userStoreId
         ? {
-            rules: { some: { storeId: userStoreId } },
-          }
+          rules: { some: { storeId: userStoreId } },
+        }
         : {},
       include: {
         rules: userStoreId
           ? {
-              where: { storeId: userStoreId },
-              include: {
-                // 👈 ADD THIS
-                store: {
-                  select: { id: true, name: true },
-                },
-              },
-            }
-          : {
-              include: {
-                store: {
-                  select: { id: true, name: true },
-                },
+            where: { storeId: userStoreId },
+            include: {
+              // 👈 ADD THIS
+              store: {
+                select: { id: true, name: true },
               },
             },
+          }
+          : {
+            include: {
+              store: {
+                select: { id: true, name: true },
+              },
+            },
+          },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -248,6 +248,15 @@ async function deleteProductQuantity(req, res) {
 async function getProductsByMainStock(req, res) {
   try {
     const { mainStockId } = req.params;
+    const { sku, title, page = 1, limit = 10 } = req.query; // Get search and pagination parameters
+
+    // Parse and validate pagination parameters
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+
+    if (pageNum < 1 || limitNum < 1) {
+      return res.status(400).json({ error: "Page and limit must be positive integers" });
+    }
 
     // 1. Get main stock + rules
     const mainStock = await prisma.mainStock.findUnique({
@@ -293,9 +302,24 @@ async function getProductsByMainStock(req, res) {
         }))
     );
 
+    // 4.5. Filter by search parameters (SKU and/or title)
+    let filtered = flattened;
+
+    if (sku) {
+      filtered = filtered.filter((item) =>
+        item.sku.toLowerCase().includes(sku.toLowerCase())
+      );
+    }
+
+    if (title) {
+      filtered = filtered.filter((item) =>
+        item.productName.toLowerCase().includes(title.toLowerCase())
+      );
+    }
+
     // 5. Merge quantities by SKU
     const merged = Object.values(
-      flattened.reduce((acc, item) => {
+      filtered.reduce((acc, item) => {
         if (!acc[item.sku]) {
           acc[item.sku] = {
             sku: item.sku,
@@ -316,7 +340,24 @@ async function getProductsByMainStock(req, res) {
       }, {})
     );
 
-    return res.json(merged);
+    // 6. Apply pagination
+    const totalItems = merged.length;
+    const totalPages = Math.ceil(totalItems / limitNum);
+    const skip = (pageNum - 1) * limitNum;
+    const paginatedData = merged.slice(skip, skip + limitNum);
+
+    // 7. Return paginated response with metadata
+    return res.json({
+      data: paginatedData,
+      pagination: {
+        currentPage: pageNum,
+        pageSize: limitNum,
+        totalItems: totalItems,
+        totalPages: totalPages,
+        hasNextPage: pageNum < totalPages,
+        hasPreviousPage: pageNum > 1,
+      },
+    });
   } catch (err) {
     console.error("getProductsByMainStock error:", err);
     return res.status(500).json({ error: err.message });
