@@ -60,7 +60,6 @@ async function listMainStock(req, res) {
           ? {
             where: { storeId: userStoreId },
             include: {
-              // 👈 ADD THIS
               store: {
                 select: { id: true, name: true },
               },
@@ -228,7 +227,7 @@ async function listProductQuantities(req, res) {
   }
 }
 
-// ===================== DELETE PRODUCT QUANTITY (SKU BASED) =====================
+// ===================== DELETE PRODUCT QUANTITY (SKU BASED) w=====================
 async function deleteProductQuantity(req, res) {
   try {
     const { mainStockId, sku } = req.params;

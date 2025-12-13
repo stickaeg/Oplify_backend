@@ -52,6 +52,8 @@ model Order {
   updatedAt      DateTime    @updatedAt
 
   items          OrderItem[]
+    returnedItems ReturnedItem[]  // <—
+
 
   @@unique([shopifyId, storeId])
   @@index([status])
@@ -71,6 +73,9 @@ model OrderItem {
   status      Status   @default(WAITING_BATCH)
 
   shopifyLineItemId      String?     // gid://shopify/LineItem/...
+
+    returnedItems ReturnedItem[]  // <—
+
 
   
   BatchItem   BatchItem[]
@@ -101,6 +106,8 @@ model Store {
   shopifyLocationId      String?     // gid://shopify/Location/...
 
   rules   ProductTypeRule[]
+    returnedItems ReturnedItem[]  // <—
+
 
   users       User[] 
   products    Product[]
@@ -122,6 +129,8 @@ model Product {
 
   variants    ProductVariant[] 
   OrderItem   OrderItem[]
+    returnedItems ReturnedItem[]  // <—
+
 
   @@unique([shopifyId, storeId])
   @@index([productType])
@@ -143,6 +152,7 @@ model ProductVariant {
 
   OrderItem         OrderItem[]
   stockMappings    ProductStockMapping[] // relation field pointing back
+  returnedItems ReturnedItem[]  // <—
 
 
   @@unique([shopifyId, productId])
@@ -187,6 +197,36 @@ model MainStock {
 
   @@unique([name])
 }
+
+
+model ReturnedItem {
+  id           String   @id @default(cuid())
+
+  storeId      String
+  store        Store    @relation(fields: [storeId], references: [id])
+
+  orderItemId  String
+  orderItem    OrderItem @relation(fields: [orderItemId], references: [id])
+
+  orderId      String
+  order        Order    @relation(fields: [orderId], references: [id])
+
+  productId    String
+  product      Product  @relation(fields: [productId], references: [id])
+
+  variantId    String?
+  variant      ProductVariant? @relation(fields: [variantId], references: [id])
+
+  quantity     Int
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  @@index([storeId])
+  @@index([orderItemId])
+  @@index([productId])
+  @@index([variantId])
+}
+
 
 model ProductStockQuantity {
   id               String         @id @default(cuid())

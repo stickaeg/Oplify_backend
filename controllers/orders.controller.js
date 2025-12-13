@@ -1,4 +1,5 @@
 const { createReplacementUnit } = require("../helpers/batchHelper");
+const { createReturnedItemWithTx } = require("../helpers/returnedItems");
 const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 const prisma = require("../prisma/client");
 const { adjustMainStock } = require("../util/mainStockHelper");
@@ -333,7 +334,7 @@ function determineOverallStatus(batchProgress) {
 async function updateOrderItemStatus(req, res) {
   try {
     const { orderItemId } = req.params;
-    const { status, unitIds } = req.body;
+    const { status, unitIds, reason, quantityReturned } = req.body;
 
     const validStatuses = [
       "PENDING",
@@ -373,19 +374,14 @@ async function updateOrderItemStatus(req, res) {
     }
 
     await prisma.$transaction(async (tx) => {
-      // -----------------------------
-      // 1️⃣ Update OrderItem / BatchItem / Units
-      // -----------------------------
+      // 1) Update OrderItem / BatchItem / Units
       if (orderItem.BatchItem && orderItem.BatchItem.length > 0) {
-        // POD order
         if (unitIds && Array.isArray(unitIds) && unitIds.length > 0) {
-          // Partial fulfillment
           await tx.batchItemUnit.updateMany({
             where: { id: { in: unitIds }, batchItem: { orderItemId } },
             data: { status },
           });
         } else {
-          // Full fulfillment - update all units
           const batchItemIds = orderItem.BatchItem.map((bi) => bi.id);
           await tx.batchItemUnit.updateMany({
             where: { batchItemId: { in: batchItemIds } },
@@ -393,7 +389,6 @@ async function updateOrderItemStatus(req, res) {
           });
         }
 
-        // Recalculate BatchItem status
         const affectedBatchItems = await tx.batchItem.findMany({
           where: { orderItemId },
           include: { units: true },
@@ -408,7 +403,6 @@ async function updateOrderItemStatus(req, res) {
           });
         }
 
-        // Recalculate OrderItem status
         const allUnits = await tx.batchItemUnit.findMany({
           where: { batchItem: { orderItemId } },
           select: { status: true },
@@ -422,16 +416,13 @@ async function updateOrderItemStatus(req, res) {
           data: { status: orderItemStatus },
         });
       } else {
-        // Normal stock order - just update order item
         await tx.orderItem.update({
           where: { id: orderItemId },
           data: { status },
         });
       }
 
-      // -----------------------------
-      // 2️⃣ Adjust ProductStockQuantity
-      // -----------------------------
+      // 2) Adjust ProductStockQuantity
       const updatedOrderItem = await tx.orderItem.findUnique({
         where: { id: orderItemId },
         include: {
@@ -443,12 +434,9 @@ async function updateOrderItemStatus(req, res) {
 
       if (updatedOrderItem) {
         const finalStatus = updatedOrderItem.status;
+        if (["NOTHING", "RETURNED"].includes(finalStatus)) {
+          const action = finalStatus === "NOTHING" ? "decrement" : "increment";
 
-        if (["FULFILLED", "RETURNED"].includes(finalStatus)) {
-          const action =
-            finalStatus === "FULFILLED" ? "decrement" : "increment";
-
-          // Get rules matching product type & variant
           const rules = await tx.productTypeRule.findMany({
             where: {
               storeId: updatedOrderItem.order.storeId,
@@ -460,14 +448,13 @@ async function updateOrderItemStatus(req, res) {
 
           for (const rule of rules) {
             for (const mainStock of rule.mainStocks) {
-             
               const stockRecord = await tx.productStockQuantity.findUnique({
                 where: {
                   mainStockId_sku: {
                     mainStockId: mainStock.id,
                     sku:
                       updatedOrderItem.variant?.sku ||
-                      updatedOrderItem.product.sku, 
+                      updatedOrderItem.product.sku,
                   },
                 },
               });
@@ -486,11 +473,23 @@ async function updateOrderItemStatus(req, res) {
             }
           }
         }
+
+        // 2.5) Create ReturnedItem when persisted status is RETURNED
+        if (updatedOrderItem.status === "RETURNED") {
+          const qty =
+            typeof quantityReturned === "number"
+              ? quantityReturned
+              : updatedOrderItem.quantity;
+
+          await createReturnedItemWithTx(tx, {
+            orderItemId,
+            quantity: qty,
+            reason,
+          });
+        }
       }
 
-      // -----------------------------
-      // 3️⃣ Update Batch status if POD
-      // -----------------------------
+      // 3) Update Batch status if POD
       if (orderItem.BatchItem && orderItem.BatchItem.length > 0) {
         const batchIds = [
           ...new Set(orderItem.BatchItem.map((bi) => bi.batchId)),
@@ -515,9 +514,7 @@ async function updateOrderItemStatus(req, res) {
         }
       }
 
-      // -----------------------------
-      // 4️⃣ Update overall Order status
-      // -----------------------------
+      // 4) Update overall Order status
       await updateOrderStatusFromItems(orderItem.orderId, tx);
     });
 

@@ -279,6 +279,39 @@ async function handleOrderCreate(req, res) {
           data: orderItemData,
         });
 
+        const rules = await tx.productTypeRule.findMany({
+          where: {
+            storeId: createdOrder.storeId,
+            name: product.productType,
+            variantTitle: variant?.title,
+          },
+          include: { mainStocks: true },
+        });
+
+        for (const rule of rules) {
+          for (const mainStock of rule.mainStocks) {
+            const stockRecord = await tx.productStockQuantity.findUnique({
+              where: {
+                mainStockId_sku: {
+                  mainStockId: mainStock.id,
+                  sku: variant?.sku || product.sku,
+                },
+              },
+            });
+
+            if (!stockRecord) continue;
+
+            const newQty = stockRecord.quantity - item.quantity;
+
+            await tx.productStockQuantity.update({
+              where: { id: stockRecord.id },
+              data: {
+                quantity: newQty,
+                updatedAt: new Date(),
+              },
+            });
+          }
+        }
         if (requiresStock && variant) {
           const variantTitle = item.variant_title || variant.title || null;
           console.log(

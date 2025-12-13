@@ -19,6 +19,7 @@ const { createBatch } = require("../controllers/batches.controllers");
 const {
   getTotalOrders,
   getTotalProductTypesSold,
+  getReturnedItems,
 } = require("../controllers/dashboard.controllers");
 
 const { attachStoreScope } = require("../middleware/AuthMiddlewares");
@@ -74,6 +75,8 @@ router.get("/mainStock/:mainStockId/products", getProductsByMainStock);
 
 // ----- Dashboard Endpoints -----
 router.get("/dashboard/totalOrders", attachStoreScope, getTotalOrders);
+
+router.get("/dashboard/returnedItems", attachStoreScope, getReturnedItems);
 
 router.get(
   "/dashboard/totalProductTypesSold",

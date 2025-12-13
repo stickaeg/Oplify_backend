@@ -161,7 +161,79 @@ async function getTotalProductTypesSold(req, res, next) {
   }
 }
 
+async function getReturnedItems(req, res, next) {
+  try {
+    const { startDate, endDate } = req.query;
+
+    // base where for ReturnedItem
+    const where = {};
+
+    // store scoping: USER -> own store, ADMIN -> optional filter, or all
+    if (req.storeId) {
+      where.storeId = req.storeId;
+    }
+
+    // optional date range on createdAt
+    const createdAtFilter = {};
+
+    if (startDate) {
+      const start = new Date(startDate);
+      if (!isNaN(start)) {
+        createdAtFilter.gte = start;
+      }
+    }
+
+    if (endDate) {
+      const end = new Date(endDate);
+      if (!isNaN(end)) {
+        createdAtFilter.lte = end;
+      }
+    }
+
+    if (Object.keys(createdAtFilter).length > 0) {
+      where.createdAt = createdAtFilter;
+    }
+
+    // fetch returned items with product, variant, order & store details
+    const returnedItems = await prisma.returnedItem.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      include: {
+        store: {
+          select: {
+            id: true,
+            name: true,
+            shopDomain: true,
+          },
+        },
+        product: {
+          select: { id: true, title: true, imgUrl: true, productType: true },
+        },
+        variant: {
+          select: { id: true, title: true, sku: true },
+        },
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            customerName: true,
+            storeId: true,
+          },
+        },
+      },
+    });
+
+    return res.json({ returnedItems });
+
+    return res.json({ returnedItems });
+  } catch (error) {
+    console.error("Error in getReturnedItems:", error);
+    return next(error);
+  }
+}
+
 module.exports = {
   getTotalOrders,
   getTotalProductTypesSold,
+  getReturnedItems,
 };
