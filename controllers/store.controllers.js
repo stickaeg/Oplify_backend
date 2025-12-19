@@ -5,6 +5,7 @@ const {
   deleteOldWebhooks,
   createOrderWebhook,
   fetchShopLocationId,
+  createInventoryWebhook,
 } = require("../services/shopifyServices");
 const prisma = require("../prisma/client");
 
@@ -41,6 +42,22 @@ async function addStore(req, res) {
       accessToken,
       `${process.env.HOST}/webhooks/orders/create`
     );
+
+    try {
+      await createInventoryWebhook(
+        shopDomain,
+        accessToken,
+        `${process.env.HOST}/webhooks/inventory/update`
+      );
+      console.log(
+        `✅ Inventory webhook (inventory_levels/update) created for ${shopDomain}`
+      );
+    } catch (err) {
+      console.error(
+        "❌ Error creating inventory webhook:",
+        err?.message || err
+      );
+    }
 
     // Create Shopify webhook (example: PRODUCTS_UPDATE)
     try {

@@ -1,4 +1,9 @@
+const { decrypt } = require("../lib/crypto");
 const prisma = require("../prisma/client");
+const {
+  findInventoryItemIdBySku,
+  setInventoryQuantityExact,
+} = require("../services/shopifyServices");
 
 // ===================== CREATE MAIN STOCK =====================
 async function createMainStock(req, res) {
@@ -52,26 +57,26 @@ async function listMainStock(req, res) {
     const mainStocks = await prisma.mainStock.findMany({
       where: userStoreId
         ? {
-          rules: { some: { storeId: userStoreId } },
-        }
+            rules: { some: { storeId: userStoreId } },
+          }
         : {},
       include: {
         rules: userStoreId
           ? {
-            where: { storeId: userStoreId },
-            include: {
-              store: {
-                select: { id: true, name: true },
+              where: { storeId: userStoreId },
+              include: {
+                store: {
+                  select: { id: true, name: true },
+                },
               },
-            },
-          }
+            }
           : {
-            include: {
-              store: {
-                select: { id: true, name: true },
+              include: {
+                store: {
+                  select: { id: true, name: true },
+                },
               },
             },
-          },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -196,15 +201,248 @@ async function assignProductQuantity(req, res) {
     const { mainStockId } = req.params;
     const { sku, quantity } = req.body;
 
-    if (!sku) return res.status(400).json({ error: "SKU is required" });
+    console.log("assignProductQuantity IN:", { mainStockId, sku, quantity });
 
-    await prisma.productStockQuantity.upsert({
+    if (!sku) {
+      console.log("Early exit: missing sku");
+      return res.status(400).json({ error: "SKU is required" });
+    }
+
+    const qty = Number(quantity);
+    if (Number.isNaN(qty) || qty < 0) {
+      console.log("Early exit: bad quantity", { quantity });
+      return res
+        .status(400)
+        .json({ error: "quantity must be a non-negative number" });
+    }
+
+    // 1) Save in your DB (global main stock)
+    console.log("Before prisma.productStockQuantity.upsert");
+    const record = await prisma.productStockQuantity.upsert({
       where: { mainStockId_sku: { mainStockId, sku } },
-      create: { mainStockId, sku, quantity },
-      update: { quantity },
+      create: { mainStockId, sku, quantity: qty },
+      update: { quantity: qty },
+    });
+    console.log("After prisma.productStockQuantity.upsert", { record });
+
+    // 2) Load MainStock with its rules and each rule's store
+    console.log("Before prisma.mainStock.findUnique");
+    const mainStock = await prisma.mainStock.findUnique({
+      where: { id: mainStockId },
+      include: {
+        rules: {
+          include: {
+            store: true,
+          },
+        },
+      },
+    });
+    console.log("After prisma.mainStock.findUnique", {
+      mainStockExists: !!mainStock,
+      rulesCount: mainStock?.rules.length ?? 0,
     });
 
-    return res.json({ success: true, sku, quantity });
+    if (!mainStock) {
+      console.log("Early exit: mainStock not found");
+      return res.status(400).json({ error: "MainStock not found" });
+    }
+
+    const storeIds = Array.from(
+      new Set(mainStock.rules.map((r) => r.storeId).filter((id) => !!id))
+    );
+
+    console.log("Derived storeIds from rules:", { storeIds });
+
+    if (storeIds.length === 0) {
+      console.log("No stores linked via rules for this mainStock");
+      return res.json({
+        success: true,
+        sku,
+        quantity: record.quantity,
+        shopifySync: "no_rules_stores",
+      });
+    }
+
+    // 3) Get all candidate variants with this SKU in those stores
+    console.log("Before prisma.productVariant.findMany for variants", {
+      sku,
+      storeIds,
+    });
+    const variants = await prisma.productVariant.findMany({
+      where: {
+        sku,
+        product: {
+          storeId: { in: storeIds },
+        },
+      },
+      include: {
+        product: {
+          include: {
+            store: true,
+          },
+        },
+      },
+    });
+    console.log("After productVariant.findMany", {
+      variantsCount: variants.length,
+      variantIds: variants.map((v) => v.id),
+    });
+
+    const syncResults = [];
+
+    // 4) Loop per variant
+    for (const variant of variants) {
+      const store = variant.product.store;
+      if (!store) {
+        console.warn("Variant without store, skipping", {
+          variantId: variant.id,
+        });
+        continue;
+      }
+
+      console.log(
+        "MainStock rules:",
+        mainStock.rules.map((r) => ({
+          id: r.id,
+          storeId: r.storeId,
+          name: r.name,
+          variantTitle: r.variantTitle,
+        }))
+      );
+
+      const rule = mainStock.rules.find((r) => {
+        if (r.storeId !== store.id) return false;
+        if (r.name !== variant.product.productType) return false;
+        if (r.variantTitle && r.variantTitle.trim().length > 0) {
+          if (r.variantTitle !== variant.title) return false;
+        }
+
+        return true;
+      });
+
+      console.log("Evaluated rule for variant", {
+        variantId: variant.id,
+        sku: variant.sku,
+        productType: variant.product.productType,
+        variantTitle: variant.title,
+        storeId: store.id,
+        foundRule: !!rule,
+      });
+
+      console.log("Evaluated rule for variant", {
+        variantId: variant.id,
+        sku: variant.sku,
+        productType: variant.product.productType,
+        variantTitle: variant.title,
+        storeId: store.id,
+        foundRule: !!rule,
+      });
+
+      if (!rule) {
+        syncResults.push({
+          storeId: store.id,
+          shopDomain: store.shopDomain,
+          status: "no_matching_rule",
+        });
+        continue;
+      }
+
+      const shopDomain = store.shopDomain;
+      const accessToken = decrypt(store.accessToken);
+      const locationId = store.shopifyLocationId;
+
+      console.log("Store + Shopify details", {
+        storeId: store.id,
+        shopDomain,
+        hasToken: !!accessToken,
+        locationId,
+      });
+
+      if (!locationId) {
+        console.warn("No shopifyLocationId for store; skipping Shopify sync", {
+          storeId: store.id,
+        });
+        syncResults.push({
+          storeId: store.id,
+          shopDomain,
+          status: "skipped_no_location",
+        });
+        continue;
+      }
+
+      // 5) Resolve inventoryItemId for this SKU in this store
+      console.log("Before findInventoryItemIdBySku", {
+        shopDomain,
+        sku,
+      });
+      const inventoryItemId = await findInventoryItemIdBySku(
+        shopDomain,
+        accessToken,
+        sku
+      );
+      console.log("After findInventoryItemIdBySku", {
+        shopDomain,
+        sku,
+        inventoryItemId,
+      });
+
+      if (!inventoryItemId) {
+        console.warn("No inventoryItemId found for SKU in this store", {
+          shopDomain,
+          storeId: store.id,
+          sku,
+        });
+        syncResults.push({
+          storeId: store.id,
+          shopDomain,
+          status: "no_inventory_item_for_sku",
+        });
+        continue;
+      }
+
+      console.log("Before setInventoryQuantityExact", {
+        shopDomain,
+        locationId,
+        inventoryItemId,
+        quantity: qty,
+      });
+
+      await setInventoryQuantityExact(shopDomain, accessToken, {
+        locationId,
+        inventoryItemId,
+        quantity: qty,
+        name: "available",
+        reason: "correction",
+        ignoreCompareQuantity: true,
+      });
+
+      console.log("After setInventoryQuantityExact", {
+        shopDomain,
+        inventoryItemId,
+        quantity: qty,
+      });
+
+      syncResults.push({
+        storeId: store.id,
+        shopDomain,
+        status: "ok",
+      });
+    }
+
+    console.log("assignProductQuantity DONE", {
+      mainStockId,
+      sku,
+      qty,
+      syncResults,
+    });
+
+    return res.json({
+      success: true,
+      sku,
+      quantity: record.quantity,
+      mainStockId,
+      shopifySync: syncResults,
+    });
   } catch (err) {
     console.error("assignProductQuantity error:", err);
     return res.status(500).json({ error: err.message });
@@ -254,7 +492,9 @@ async function getProductsByMainStock(req, res) {
     const limitNum = parseInt(limit, 10);
 
     if (pageNum < 1 || limitNum < 1) {
-      return res.status(400).json({ error: "Page and limit must be positive integers" });
+      return res
+        .status(400)
+        .json({ error: "Page and limit must be positive integers" });
     }
 
     // 1. Get main stock + rules

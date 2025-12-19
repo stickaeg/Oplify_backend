@@ -163,14 +163,29 @@ async function getTotalProductTypesSold(req, res, next) {
 
 async function getReturnedItems(req, res, next) {
   try {
-    const { startDate, endDate } = req.query;
+    const {
+      startDate,
+      endDate,
+      storeId: queryStoreId,
+      productType,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
+    const pageSize = Math.max(parseInt(limit, 10) || 20, 1);
 
     // base where for ReturnedItem
     const where = {};
 
     // store scoping: USER -> own store, ADMIN -> optional filter, or all
     if (req.storeId) {
+      // USER or ADMIN with attachStoreScope
       where.storeId = req.storeId;
+    } else if (queryStoreId) {
+      // in case you want explicit storeId for admin when attachStoreScope
+      // sets req.storeId = null
+      where.storeId = queryStoreId;
     }
 
     // optional date range on createdAt
@@ -194,38 +209,63 @@ async function getReturnedItems(req, res, next) {
       where.createdAt = createdAtFilter;
     }
 
-    // fetch returned items with product, variant, order & store details
-    const returnedItems = await prisma.returnedItem.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      include: {
-        store: {
-          select: {
-            id: true,
-            name: true,
-            shopDomain: true,
+    // filter by productType via relation
+    if (productType) {
+      where.product = {
+        // relation filter
+        productType: {
+          equals: productType,
+          mode: "insensitive",
+        },
+      };
+    }
+
+    const skip = (pageNumber - 1) * pageSize;
+
+    const [returnedItems, total] = await prisma.$transaction([
+      prisma.returnedItem.findMany({
+        where,
+        skip,
+        take: pageSize,
+        orderBy: { createdAt: "desc" },
+        include: {
+          store: {
+            select: {
+              id: true,
+              name: true,
+              shopDomain: true,
+            },
+          },
+          product: {
+            select: { id: true, title: true, imgUrl: true, productType: true },
+          },
+          variant: {
+            select: { id: true, title: true, sku: true },
+          },
+          order: {
+            select: {
+              id: true,
+              orderNumber: true,
+              customerName: true,
+              storeId: true,
+            },
           },
         },
-        product: {
-          select: { id: true, title: true, imgUrl: true, productType: true },
-        },
-        variant: {
-          select: { id: true, title: true, sku: true },
-        },
-        order: {
-          select: {
-            id: true,
-            orderNumber: true,
-            customerName: true,
-            storeId: true,
-          },
-        },
+      }),
+      prisma.returnedItem.count({ where }),
+    ]);
+
+    const totalPages = Math.ceil(total / pageSize) || 1;
+
+    return res.json({
+      data: returnedItems,
+      pagination: {
+        total,
+        page: pageNumber,
+        limit: pageSize,
+        totalPages,
       },
     });
-
-    return res.json({ returnedItems });
-
-    return res.json({ returnedItems });
   } catch (error) {
     console.error("Error in getReturnedItems:", error);
     return next(error);

@@ -434,8 +434,17 @@ async function updateOrderItemStatus(req, res) {
 
       if (updatedOrderItem) {
         const finalStatus = updatedOrderItem.status;
-        if (["NOTHING", "RETURNED"].includes(finalStatus)) {
-          const action = finalStatus === "NOTHING" ? "decrement" : "increment";
+
+        // Decide how this status should affect main stock
+        const shouldAffectStock =
+          ["NOTHING"].includes(finalStatus) ||
+          ["RETURNED", "CANCELLED"].includes(finalStatus);
+
+        if (shouldAffectStock) {
+          // decrement for “used” statuses, increment for RETURNED/CANCELLED
+          const action = ["RETURNED", "CANCELLED"].includes(finalStatus)
+            ? "increment"
+            : "decrement";
 
           const rules = await tx.productTypeRule.findMany({
             where: {
@@ -448,23 +457,25 @@ async function updateOrderItemStatus(req, res) {
 
           for (const rule of rules) {
             for (const mainStock of rule.mainStocks) {
+              const sku =
+                updatedOrderItem.variant?.sku || updatedOrderItem.product.sku;
+
               const stockRecord = await tx.productStockQuantity.findUnique({
                 where: {
                   mainStockId_sku: {
                     mainStockId: mainStock.id,
-                    sku:
-                      updatedOrderItem.variant?.sku ||
-                      updatedOrderItem.product.sku,
+                    sku,
                   },
                 },
               });
 
               if (!stockRecord) continue;
 
+              const delta = updatedOrderItem.quantity;
               const newQty =
                 action === "decrement"
-                  ? stockRecord.quantity - updatedOrderItem.quantity
-                  : stockRecord.quantity + updatedOrderItem.quantity;
+                  ? stockRecord.quantity - delta
+                  : stockRecord.quantity + delta;
 
               await tx.productStockQuantity.update({
                 where: { id: stockRecord.id },

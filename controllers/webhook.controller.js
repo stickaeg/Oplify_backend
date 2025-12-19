@@ -1,6 +1,11 @@
 const prisma = require("../prisma/client");
 
 const { assignOrderItemsToBatches } = require("../helpers/batchHelper");
+const {
+  findInventoryItemIdBySku,
+  setInventoryQuantityExact,
+} = require("../services/shopifyServices");
+const { decrypt } = require("../lib/crypto");
 
 async function handleProductCreate(req, res) {
   try {
@@ -174,12 +179,10 @@ async function handleOrderCreate(req, res) {
     console.log("Order Info:", orderData);
     console.log("Customer Info:", orderData.customer);
 
-    // Prepare array to hold processed order items for nested create
     const processedItems = [];
+    const stockChanges = []; // { mainStockId, sku }[]
 
-    // Start a transaction to create order + items + stock reservations atomically
     await prisma.$transaction(async (tx) => {
-      // Create the order first without items
       const createdOrder = await tx.order.create({
         data: {
           shopifyId: shopifyOrderId,
@@ -211,17 +214,13 @@ async function handleOrderCreate(req, res) {
           totalPrice: orderData.current_total_price
             ? parseFloat(orderData.current_total_price)
             : null,
-
-          // ✅ NEW FIELDS FOR REFUNDS:
           shopifyCurrency: orderData.currency || null,
           shopifyTransactions: JSON.stringify(orderData.transactions || []),
           shopifyLocationId: store.shopifyLocationId || null,
-
           status: "PENDING",
         },
       });
 
-      // Process each line item for product, variant, and conditionally stock reservation
       for (const item of mergedLineItems) {
         const shopifyProductId = `gid://shopify/Product/${item.product_id}`;
         const shopifyVariantId = `gid://shopify/ProductVariant/${item.variant_id}`;
@@ -249,7 +248,6 @@ async function handleOrderCreate(req, res) {
           },
         });
 
-        // inside handleOrderCreate loop
         const productRule = await tx.productTypeRule.findFirst({
           where: {
             storeId: store.id,
@@ -263,7 +261,6 @@ async function handleOrderCreate(req, res) {
 
         const requiresStock = productRule?.requiresStock === true;
 
-        // Prepare order item create data; will add stockReservationId if applicable
         const orderItemData = {
           orderId: createdOrder.id,
           productId: product.id,
@@ -274,7 +271,6 @@ async function handleOrderCreate(req, res) {
           shopifyLineItemId: `gid://shopify/LineItem/${item.id}`,
         };
 
-        // Create the order item first to get its ID for reservation
         const createdOrderItem = await tx.orderItem.create({
           data: orderItemData,
         });
@@ -290,11 +286,13 @@ async function handleOrderCreate(req, res) {
 
         for (const rule of rules) {
           for (const mainStock of rule.mainStocks) {
+            const sku = variant?.sku || product.sku;
+
             const stockRecord = await tx.productStockQuantity.findUnique({
               where: {
                 mainStockId_sku: {
                   mainStockId: mainStock.id,
-                  sku: variant?.sku || product.sku,
+                  sku,
                 },
               },
             });
@@ -310,8 +308,12 @@ async function handleOrderCreate(req, res) {
                 updatedAt: new Date(),
               },
             });
+
+            // remember this change for Shopify sync
+            stockChanges.push({ mainStockId: mainStock.id, sku });
           }
         }
+
         if (requiresStock && variant) {
           const variantTitle = item.variant_title || variant.title || null;
           console.log(
@@ -334,14 +336,12 @@ async function handleOrderCreate(req, res) {
             } else {
               const qty = item.quantity;
 
-              // Optional guard, or remove if you don't care about negative
               if (stockVariant.currentStock < qty) {
                 throw new Error(
                   `Insufficient stock for ${stockVariant.name} (have ${stockVariant.currentStock}, need ${qty})`
                 );
               }
 
-              // Just decrement stock, no StockMovement
               await tx.stockVariant.update({
                 where: { id: stockVariant.id },
                 data: {
@@ -358,6 +358,9 @@ async function handleOrderCreate(req, res) {
       }
     });
 
+    // AFTER transaction: sync updated main stocks to Shopify (use final CRM values)
+    await syncMainStocksToShopify(stockChanges);
+
     try {
       await assignOrderItemsToBatches(processedItems);
       console.log("🧺 Items assigned to batches successfully");
@@ -372,6 +375,338 @@ async function handleOrderCreate(req, res) {
       return res.status(409).json({ error: err.message });
     }
     return res.status(500).send("Internal Server Error");
+  }
+}
+
+function dedupeStockChanges(changes) {
+  const seen = new Set();
+  const result = [];
+  for (const c of changes) {
+    const key = `${c.mainStockId}:${c.sku}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(c);
+  }
+  return result;
+}
+
+async function syncMainStocksToShopify(stockChanges) {
+  const uniqueChanges = dedupeStockChanges(stockChanges);
+
+  for (const { mainStockId, sku } of uniqueChanges) {
+    try {
+      console.log("🔄 Syncing mainStock to Shopify", { mainStockId, sku });
+
+      // 1) Get updated quantity from DB (absolute quantity to push)
+      const record = await prisma.productStockQuantity.findUnique({
+        where: { mainStockId_sku: { mainStockId, sku } },
+      });
+      if (!record) {
+        console.warn("No productStockQuantity record, skipping", {
+          mainStockId,
+          sku,
+        });
+        continue;
+      }
+      const qty = record.quantity;
+
+      console.log("🔢 CRM final quantity for sync", {
+        mainStockId,
+        sku,
+        qty,
+      });
+
+      // 2) Load MainStock with rules + store
+      const mainStock = await prisma.mainStock.findUnique({
+        where: { id: mainStockId },
+        include: {
+          rules: {
+            include: { store: true },
+          },
+        },
+      });
+      if (!mainStock) {
+        console.warn("MainStock not found during sync, skipping", {
+          mainStockId,
+        });
+        continue;
+      }
+
+      const storeIds = Array.from(
+        new Set(mainStock.rules.map((r) => r.storeId).filter((id) => !!id))
+      );
+      if (storeIds.length === 0) {
+        console.log("No rules/stores for mainStock, skipping sync", {
+          mainStockId,
+        });
+        continue;
+      }
+
+      // 3) Find variants with this SKU in those stores
+      const variants = await prisma.productVariant.findMany({
+        where: {
+          sku,
+          product: {
+            storeId: { in: storeIds },
+          },
+        },
+        include: {
+          product: {
+            include: { store: true },
+          },
+        },
+      });
+
+      console.log("Found variants for sync", {
+        mainStockId,
+        sku,
+        variantsCount: variants.length,
+      });
+
+      // 4) For each variant+store, check rule and push to Shopify
+      for (const variant of variants) {
+        const store = variant.product.store;
+        if (!store) continue;
+
+        const rule = mainStock.rules.find((r) => {
+          if (r.storeId !== store.id) return false;
+          if (r.name !== variant.product.productType) return false;
+          if (r.variantTitle && r.variantTitle.trim().length > 0) {
+            if (r.variantTitle !== variant.title) return false;
+          }
+          return true;
+        });
+
+        if (!rule) {
+          console.log("No matching rule for variant, skipping", {
+            mainStockId,
+            sku,
+            storeId: store.id,
+            productType: variant.product.productType,
+            variantTitle: variant.title,
+          });
+          continue;
+        }
+
+        const shopDomain = store.shopDomain;
+        const accessToken = decrypt(store.accessToken);
+        const locationId = store.shopifyLocationId;
+        if (!locationId) {
+          console.warn(
+            "No shopifyLocationId for store; skipping Shopify sync",
+            {
+              storeId: store.id,
+            }
+          );
+          continue;
+        }
+
+        console.log("🚀 Pushing quantity to Shopify", {
+          shopDomain,
+          storeId: store.id,
+          sku,
+          qty,
+        });
+
+        const inventoryItemId = await findInventoryItemIdBySku(
+          shopDomain,
+          accessToken,
+          sku
+        );
+        if (!inventoryItemId) {
+          console.warn("No inventoryItemId for sku in store, skipping", {
+            sku,
+            storeId: store.id,
+          });
+          continue;
+        }
+
+        await setInventoryQuantityExact(shopDomain, accessToken, {
+          locationId,
+          inventoryItemId,
+          quantity: qty,
+          name: "available",
+          reason: "correction",
+          ignoreCompareQuantity: true,
+        });
+
+        console.log("✅ Synced to Shopify", {
+          mainStockId,
+          sku,
+          storeId: store.id,
+          qty,
+        });
+      }
+    } catch (err) {
+      console.error("❌ Error syncing mainStock to Shopify", {
+        mainStockId,
+        sku,
+        error: err.message,
+      });
+    }
+  }
+}
+
+function dedupeStockChanges(changes) {
+  const seen = new Set();
+  const result = [];
+  for (const c of changes) {
+    const key = `${c.mainStockId}:${c.sku}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(c);
+  }
+  return result;
+}
+
+async function syncMainStocksToShopify(stockChanges) {
+  const uniqueChanges = dedupeStockChanges(stockChanges);
+
+  for (const { mainStockId, sku } of uniqueChanges) {
+    try {
+      console.log("🔄 Syncing mainStock to Shopify", { mainStockId, sku });
+
+      // 1) Get updated quantity from DB (absolute quantity to push)
+      const record = await prisma.productStockQuantity.findUnique({
+        where: { mainStockId_sku: { mainStockId, sku } },
+      });
+      if (!record) {
+        console.warn("No productStockQuantity record, skipping", {
+          mainStockId,
+          sku,
+        });
+        continue;
+      }
+      const qty = record.quantity;
+
+      // 2) Load MainStock with rules + store
+      const mainStock = await prisma.mainStock.findUnique({
+        where: { id: mainStockId },
+        include: {
+          rules: {
+            include: { store: true },
+          },
+        },
+      });
+      if (!mainStock) {
+        console.warn("MainStock not found during sync, skipping", {
+          mainStockId,
+        });
+        continue;
+      }
+
+      const storeIds = Array.from(
+        new Set(mainStock.rules.map((r) => r.storeId).filter((id) => !!id))
+      );
+      if (storeIds.length === 0) {
+        console.log("No rules/stores for mainStock, skipping sync", {
+          mainStockId,
+        });
+        continue;
+      }
+
+      // 3) Find variants with this SKU in those stores
+      const variants = await prisma.productVariant.findMany({
+        where: {
+          sku,
+          product: {
+            storeId: { in: storeIds },
+          },
+        },
+        include: {
+          product: {
+            include: { store: true },
+          },
+        },
+      });
+
+      console.log("Found variants for sync", {
+        mainStockId,
+        sku,
+        variantsCount: variants.length,
+      });
+
+      // 4) For each variant+store, check rule and push to Shopify
+      for (const variant of variants) {
+        const store = variant.product.store;
+        if (!store) continue;
+
+        const rule = mainStock.rules.find((r) => {
+          if (r.storeId !== store.id) return false;
+          if (r.name !== variant.product.productType) return false;
+          if (r.variantTitle && r.variantTitle.trim().length > 0) {
+            if (r.variantTitle !== variant.title) return false;
+          }
+          return true;
+        });
+
+        if (!rule) {
+          console.log("No matching rule for variant, skipping", {
+            mainStockId,
+            sku,
+            storeId: store.id,
+            productType: variant.product.productType,
+            variantTitle: variant.title,
+          });
+          continue;
+        }
+
+        const shopDomain = store.shopDomain;
+        const accessToken = decrypt(store.accessToken);
+        const locationId = store.shopifyLocationId;
+        if (!locationId) {
+          console.warn(
+            "No shopifyLocationId for store; skipping Shopify sync",
+            {
+              storeId: store.id,
+            }
+          );
+          continue;
+        }
+
+        console.log("🔍 Shopify sync target", {
+          shopDomain,
+          locationId,
+          sku,
+          qty,
+        });
+
+        const inventoryItemId = await findInventoryItemIdBySku(
+          shopDomain,
+          accessToken,
+          sku
+        );
+        if (!inventoryItemId) {
+          console.warn("No inventoryItemId for sku in store, skipping", {
+            sku,
+            storeId: store.id,
+          });
+          continue;
+        }
+
+        await setInventoryQuantityExact(shopDomain, accessToken, {
+          locationId,
+          inventoryItemId,
+          quantity: qty,
+          name: "available",
+          reason: "correction",
+          ignoreCompareQuantity: true,
+        });
+
+        console.log("✅ Synced to Shopify", {
+          mainStockId,
+          sku,
+          storeId: store.id,
+          qty,
+        });
+      }
+    } catch (err) {
+      console.error("❌ Error syncing mainStock to Shopify", {
+        mainStockId,
+        sku,
+        error: err.message,
+      });
+    }
   }
 }
 

@@ -31,16 +31,7 @@ async function createBatch(req, res) {
         .json({ error: "No ProductTypeRules found for given IDs." });
     }
 
-    // ✅ 2️⃣ VALIDATE: Same store + compatible variants
-    const storeId = rules[0].storeId;
     const hasSpecificVariants = rules.some((r) => r.variantTitle);
-
-    // All rules must be from same store
-    if (!rules.every((r) => r.storeId === storeId)) {
-      return res
-        .status(400)
-        .json({ error: "All rules must belong to the same store" });
-    }
 
     // If any rule has variantTitle, ALL must match or be null
     if (hasSpecificVariants) {

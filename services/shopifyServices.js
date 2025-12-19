@@ -103,6 +103,40 @@ const DELETE_WEBHOOK = `
     }
   }
 `;
+// Find inventory item by SKU via productVariants.[web:71][web:76]
+const GET_INVENTORY_ITEM_BY_SKU = `
+  query getInventoryItemBySku($sku: String!) {
+    productVariants(first: 1, query: $sku) {
+      edges {
+        node {
+          id
+          sku
+          inventoryItem {
+            id
+          }
+        }
+      }
+    }
+  }
+`;
+
+async function findInventoryItemIdBySku(shopDomain, accessToken, sku) {
+  const data = await graphqlRequest(
+    shopDomain,
+    accessToken,
+    GET_INVENTORY_ITEM_BY_SKU,
+    { sku: `sku:${sku}` } // exact SKU search pattern.[web:71][web:74]
+  );
+
+  const edge = data.productVariants?.edges?.[0];
+  const inventoryItemId = edge?.node?.inventoryItem?.id || null;
+
+  if (!inventoryItemId) {
+    throw new Error(`No inventory item found in Shopify for SKU ${sku}`);
+  }
+
+  return inventoryItemId;
+}
 
 async function deleteOldWebhooks(shopDomain, accessToken) {
   try {
@@ -176,6 +210,16 @@ async function createWebhook(shopDomain, accessToken, topic, callbackUrl) {
 }
 
 const ORDER_CREATE_TOPIC = "ORDERS_CREATE";
+const INVENTORY_LEVELS_UPDATE_TOPIC = "INVENTORY_LEVELS_UPDATE";
+
+async function createInventoryWebhook(shopDomain, accessToken, callbackUrl) {
+  return createWebhook(
+    shopDomain,
+    accessToken,
+    INVENTORY_LEVELS_UPDATE_TOPIC,
+    callbackUrl
+  );
+}
 
 async function createOrderWebhook(shopDomain, accessToken, callbackUrl) {
   return createWebhook(
@@ -460,6 +504,95 @@ const GET_LOCATIONS_QUERY = `
   }
 `;
 
+// ✅ NEW: Adjust inventory quantities
+const INVENTORY_SET_QUANTITIES_MUTATION = `
+  mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
+    inventorySetQuantities(input: $input) {
+      inventoryAdjustmentGroup {
+        id
+        reason
+        referenceDocumentUri
+        changes {
+          name
+          delta
+          quantityAfterChange
+        }
+      }
+      userErrors {
+        code
+        field
+        message
+      }
+    }
+  }
+`;
+
+// ✅ NEW: Set exact quantity in Shopify (no delta)
+async function setInventoryQuantityExact(
+  shopDomain,
+  accessToken,
+  {
+    locationId, // gid://shopify/Location/...
+    inventoryItemId, // gid://shopify/InventoryItem/...
+    quantity, // absolute quantity you want in Shopify
+    name = "available", // "available" or "on_hand"
+    reason = "correction",
+    referenceDocumentUri = null,
+    ignoreCompareQuantity = true, // overwrite without CAS
+  }
+) {
+  const input = {
+    name,
+    reason,
+    referenceDocumentUri,
+    ignoreCompareQuantity,
+    quantities: [
+      {
+        inventoryItemId,
+        locationId,
+        quantity,
+        compareQuantity: null, // ignored when ignoreCompareQuantity = true
+      },
+    ],
+  };
+
+  const raw = await graphqlRequest(
+    shopDomain,
+    accessToken,
+    INVENTORY_SET_QUANTITIES_MUTATION,
+    { input }
+  );
+
+  // Depending on your graphqlRequest helper, data may be nested
+  const payload = raw.data
+    ? raw.data.inventorySetQuantities
+    : raw.inventorySetQuantities;
+
+  if (!payload) {
+    console.error("Unexpected inventorySetQuantities response:", raw);
+    throw new Error("inventorySetQuantities payload missing");
+  }
+
+  if (payload.userErrors && payload.userErrors.length > 0) {
+    console.error(
+      "❌ Shopify inventorySetQuantities errors:",
+      payload.userErrors
+    );
+    throw new Error(JSON.stringify(payload.userErrors));
+  }
+
+  const group = payload.inventoryAdjustmentGroup;
+
+  console.log("✅ Inventory SET.", {
+    groupId: group?.id,
+    reason: group?.reason,
+    referenceDocumentUri: group?.referenceDocumentUri,
+    changes: group?.changes,
+  });
+
+  return group;
+}
+
 // Fetch first shop location from Shopify
 async function fetchShopLocationId(shopDomain, accessToken) {
   const data = await graphqlRequest(
@@ -484,4 +617,7 @@ module.exports = {
   cancelOrder,
   createRefund,
   fetchShopLocationId,
+  createInventoryWebhook,
+  setInventoryQuantityExact,
+  findInventoryItemIdBySku,
 };
