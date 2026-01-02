@@ -44,24 +44,21 @@ async function createBatch(req, res) {
     }
 
     // 🏷️ 3️⃣ SMART BATCH NAME with variant awareness
-    const baseName = batchName.trim();
-    const variantTitle = rules.find((r) => r.variantTitle)?.variantTitle;
-    const smartBatchName = variantTitle
-      ? `${rules[0].name} - ${variantTitle}` // "Mug - Small/White"
-      : rules[0].name; // "Mug" (all variants)
+    const baseName = batchName.trim(); // <-- from req.body, not from rules
 
     const countForThisName = await prisma.batch.count({
       where: {
-        name: { startsWith: smartBatchName },
-        rules: { some: { id: { in: ruleIds } } }, // More specific
+        name: { startsWith: baseName },
+        // if you really don't want name to depend on rules, you can drop this filter:
+        // rules: { some: { id: { in: ruleIds } } },
       },
     });
 
     const finalBatchName =
       countForThisName > 0
-        ? `${smartBatchName} - Batch #${countForThisName + 1}`
-        : `${smartBatchName} - Batch #1`;
-
+        ? `${baseName} - Batch #${countForThisName + 1}`
+        : `${baseName} - Batch #1`;
+        
     // 🚀 4️⃣ Create batch with proper settings
     const batch = await prisma.batch.create({
       data: {
