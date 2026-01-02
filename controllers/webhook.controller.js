@@ -714,4 +714,5 @@ module.exports = {
   handleProductUpdate,
   handleProductDelete,
   handleOrderCreate,
+  syncMainStocksToShopify,
 };
