@@ -189,8 +189,7 @@ async function handleOrderCreate(req, res) {
           orderNumber: orderData.order_number,
           storeId: store.id,
           customerName: orderData.customer
-            ? `${orderData.customer.first_name || ""} ${
-                orderData.customer.last_name || ""
+            ? `${orderData.customer.first_name || ""} ${orderData.customer.last_name || ""
               }`.trim()
             : null,
           customerEmail: orderData.customer?.email || null,

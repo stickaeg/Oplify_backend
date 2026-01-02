@@ -4,6 +4,7 @@ const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItem
 const prisma = require("../prisma/client");
 const { adjustMainStock } = require("../util/mainStockHelper");
 const { autoUpdateBatchStatus } = require("./batches.controllers");
+const { syncMainStocksToShopify } = require("./webhook.controller");
 
 async function listOrders(req, res) {
   try {
@@ -373,6 +374,8 @@ async function updateOrderItemStatus(req, res) {
       return res.status(404).json({ message: "Order item not found" });
     }
 
+    const stockChanges = []; // Track stock changes for Shopify sync
+
     await prisma.$transaction(async (tx) => {
       // 1) Update OrderItem / BatchItem / Units
       if (orderItem.BatchItem && orderItem.BatchItem.length > 0) {
@@ -481,6 +484,9 @@ async function updateOrderItemStatus(req, res) {
                 where: { id: stockRecord.id },
                 data: { quantity: newQty, updatedAt: new Date() },
               });
+
+              // Track this change for Shopify sync
+              stockChanges.push({ mainStockId: mainStock.id, sku });
             }
           }
         }
@@ -528,6 +534,14 @@ async function updateOrderItemStatus(req, res) {
       // 4) Update overall Order status
       await updateOrderStatusFromItems(orderItem.orderId, tx);
     });
+
+    // 5) Sync stock changes to ALL connected Shopify stores
+    if (stockChanges.length > 0) {
+      console.log("🔄 Syncing stock changes to Shopify stores", {
+        changesCount: stockChanges.length,
+      });
+      await syncMainStocksToShopify(stockChanges);
+    }
 
     const updatedOrder = await prisma.order.findUnique({
       where: { id: orderItem.orderId },
