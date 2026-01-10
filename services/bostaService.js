@@ -46,7 +46,7 @@ async function createBostaDelivery({
         const deliveryPayload = {
             type: "SEND",
             specs: {
-                packageType: "Package",
+                packageType: "Parcel",
                 size: "SMALL",
                 packageDetails: {
                     itemsCount: 1, // You can adjust this based on order items if needed
@@ -97,10 +97,10 @@ async function createBostaDelivery({
 
         console.log(
             `✅ Bosta delivery created for order ${orderNumber}:`,
-            bostaResponse._id
+            bostaResponse.data?._id
         );
 
-        return bostaResponse;
+        return bostaResponse.data;
     } catch (err) {
         console.error(
             `❌ Failed to create Bosta delivery for order ${orderNumber}:`,
