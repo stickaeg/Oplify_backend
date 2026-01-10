@@ -27,7 +27,7 @@ async function addStore(req, res) {
         shopDomain,
         name,
         accessToken: tokenEnc,
-        apiSecret: secretEnc,
+        apiSecret: secretEnc,w
         bostaApiKey: bostaKeyEnc,
       },
       update: {
