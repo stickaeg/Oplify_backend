@@ -47,6 +47,14 @@ model Order {
   shopifyTransactions    Json?       // JSON array of transactions
   shopifyLocationId      String?     // gid://shopify/Location/...
   
+  // Bosta delivery tracking fields
+  bostaDeliveryId        String?     // Bosta's _id field
+  bostaTrackingNumber    String?     // Bosta's trackingNumber
+  deliveryStatus         DeliveryStatus?  // Internal delivery status enum
+  deliveryStatusUpdatedAt DateTime?  // Last delivery status update timestamp
+  bostaState             Int?        // Raw Bosta state code (10, 30, 45, etc.)
+  bostaExceptionReason   String?     // Exception reason if any
+  bostaExceptionCode     Int?        // Exception code if any
 
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
@@ -99,6 +107,7 @@ model Store {
 
 
   apiSecret   String?   // encrypted secret used to verify webhooks if provided
+  bostaApiKey String?   // encrypted Bosta API key for delivery creation
   
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -443,4 +452,15 @@ enum MovementType {
   ADJUSTMENT
   DAMAGE
   RETURN
+}
+
+enum DeliveryStatus {
+  DELIVERY_CREATED
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED
+  RETURNED
+  EXCEPTION
+  CANCELLED
 }

@@ -11,13 +11,14 @@ const prisma = require("../prisma/client");
 
 async function addStore(req, res) {
   try {
-    const { shopDomain, name, accessToken, apiSecret } = req.body;
+    const { shopDomain, name, accessToken, apiSecret, bostaApiKey } = req.body;
     if (!shopDomain || !accessToken) {
       return res.status(400).send("missing shopDomain or accessToken");
     }
 
     const tokenEnc = encrypt(accessToken);
     const secretEnc = apiSecret ? encrypt(apiSecret) : null;
+    const bostaKeyEnc = bostaApiKey ? encrypt(bostaApiKey) : null;
 
     // Upsert store (create if new, update if existing)
     const store = await prisma.store.upsert({
@@ -27,11 +28,13 @@ async function addStore(req, res) {
         name,
         accessToken: tokenEnc,
         apiSecret: secretEnc,
+        bostaApiKey: bostaKeyEnc,
       },
       update: {
         name,
         accessToken: tokenEnc,
         apiSecret: secretEnc,
+        bostaApiKey: bostaKeyEnc,
       },
     });
 
@@ -178,6 +181,7 @@ async function addStore(req, res) {
       id: store.id,
       shopDomain: store.shopDomain,
       apiSecret: store.apiSecret,
+      bostaApiKey: store.bostaApiKey,
     });
   } catch (err) {
     console.error(err);
@@ -193,6 +197,7 @@ async function listStores(req, res) {
         name: true,
         shopDomain: true,
         createdAt: true,
+        bostaApiKey: true,
       },
       orderBy: { createdAt: "desc" },
     });

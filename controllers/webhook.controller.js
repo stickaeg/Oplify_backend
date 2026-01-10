@@ -709,10 +709,148 @@ async function syncMainStocksToShopify(stockChanges) {
   }
 }
 
+/**
+ * Bosta State Code to Internal DeliveryStatus Mapping
+ */
+const BOSTA_STATE_MAP = {
+  10: "DELIVERY_CREATED",      // Pickup requested
+  20: "DELIVERY_CREATED",      // Route Assigned
+  24: "IN_TRANSIT",            // Received at warehouse
+  25: "IN_TRANSIT",            // Fulfilled
+  30: "IN_TRANSIT",            // In transit between hubs
+  41: "OUT_FOR_DELIVERY",      // Picked up / Out for delivery
+  45: "DELIVERED",             // Delivered
+  46: "RETURNED",              // Returned to business
+  47: "EXCEPTION",             // Exception
+  48: "CANCELLED",             // Terminated
+  49: "CANCELLED",             // Canceled
+  60: "RETURNED",              // Returned to stock
+  100: "FAILED",               // Lost
+  101: "FAILED",               // Damaged
+  102: "EXCEPTION",            // Investigation
+  103: "EXCEPTION",            // Awaiting your action
+  104: "CANCELLED",            // Archived
+  105: "EXCEPTION",            // On hold
+};
+
+/**
+ * Handle Bosta webhook for delivery status updates
+ * POST /webhooks/bosta
+ */
+async function handleBostaWebhook(req, res) {
+  try {
+    console.log("📦 Bosta webhook received");
+    console.log("Headers:", JSON.stringify(req.headers, null, 2));
+    console.log("Body:", JSON.stringify(req.body, null, 2));
+
+    // Parse payload
+    const payload = req.body;
+
+    // Extract fields from Bosta webhook payload
+    const {
+      _id: bostaDeliveryId,
+      trackingNumber,
+      state,
+      timeStamp,
+      exceptionReason,
+      exceptionCode,
+    } = payload;
+
+    // Validate required fields
+    if (!bostaDeliveryId && !trackingNumber) {
+      console.warn("⚠️ Missing both deliveryId and trackingNumber in payload");
+      return res.status(400).json({ error: "Missing delivery identifier" });
+    }
+
+    if (state === undefined || state === null) {
+      console.warn("⚠️ Missing state in payload");
+      return res.status(400).json({ error: "Missing state" });
+    }
+
+    // Map Bosta state to internal DeliveryStatus
+    const deliveryStatus = BOSTA_STATE_MAP[state];
+    if (!deliveryStatus) {
+      console.warn(`⚠️ Unknown Bosta state code: ${state}`);
+      // Still accept the webhook but don't update status
+      return res.status(200).json({ message: "Unknown state code, logged" });
+    }
+
+    // Convert timestamp (milliseconds) to Date
+    const deliveryStatusUpdatedAt = timeStamp
+      ? new Date(timeStamp)
+      : new Date();
+
+    console.log(`🔄 Processing Bosta webhook: state=${state} → ${deliveryStatus}`);
+
+    // Find order by bostaDeliveryId or bostaTrackingNumber
+    const whereClause = bostaDeliveryId
+      ? { bostaDeliveryId: String(bostaDeliveryId) }
+      : { bostaTrackingNumber: String(trackingNumber) };
+
+    const existingOrder = await prisma.order.findFirst({
+      where: whereClause,
+    });
+
+    if (!existingOrder) {
+      console.warn(
+        `⚠️ No order found for Bosta delivery: ${bostaDeliveryId || trackingNumber}`
+      );
+      // Accept webhook but don't fail - order might not be in system yet
+      return res.status(200).json({ message: "Order not found, logged" });
+    }
+
+    // Check if this is a duplicate or out-of-order update
+    if (existingOrder.deliveryStatusUpdatedAt) {
+      const existingTimestamp = new Date(existingOrder.deliveryStatusUpdatedAt);
+      if (deliveryStatusUpdatedAt <= existingTimestamp) {
+        console.log(
+          `⏭️ Ignoring out-of-order or duplicate update (existing: ${existingTimestamp.toISOString()}, new: ${deliveryStatusUpdatedAt.toISOString()})`
+        );
+        return res.status(200).json({ message: "Duplicate/old update ignored" });
+      }
+    }
+
+    // Log status transition
+    console.log(
+      `📊 Status transition for Order ${existingOrder.id}: ${existingOrder.deliveryStatus || "NULL"} → ${deliveryStatus}`
+    );
+
+    // Update order with new delivery status
+    const updatedOrder = await prisma.order.update({
+      where: { id: existingOrder.id },
+      data: {
+        deliveryStatus,
+        deliveryStatusUpdatedAt,
+        bostaState: state,
+        bostaExceptionReason: exceptionReason || null,
+        bostaExceptionCode: exceptionCode || null,
+        // Also update bostaDeliveryId and trackingNumber if not already set
+        ...(bostaDeliveryId && !existingOrder.bostaDeliveryId
+          ? { bostaDeliveryId: String(bostaDeliveryId) }
+          : {}),
+        ...(trackingNumber && !existingOrder.bostaTrackingNumber
+          ? { bostaTrackingNumber: String(trackingNumber) }
+          : {}),
+      },
+    });
+
+    console.log(
+      `✅ Order ${updatedOrder.id} delivery status updated to ${deliveryStatus}`
+    );
+
+    return res.status(200).json({ message: "Webhook processed successfully" });
+  } catch (err) {
+    console.error("❌ Error processing Bosta webhook:", err);
+    // Always return 200 to prevent Bosta from retrying
+    return res.status(200).json({ error: "Internal error, logged" });
+  }
+}
+
 module.exports = {
   handleProductCreate,
   handleProductUpdate,
   handleProductDelete,
   handleOrderCreate,
   syncMainStocksToShopify,
+  handleBostaWebhook,
 };

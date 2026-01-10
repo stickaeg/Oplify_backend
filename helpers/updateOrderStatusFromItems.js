@@ -139,6 +139,49 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     console.log(`📦 Order ${orderId} completed, fulfilling in Shopify...`);
     const decryptedToken = decrypt(order.store.accessToken);
 
+    // 🚚 Create Bosta delivery if store has Bosta API key configured
+    if (order.store.bostaApiKey) {
+      try {
+        const { createBostaDelivery } = require("../services/bostaService");
+
+        const bostaDelivery = await createBostaDelivery({
+          bostaApiKey: order.store.bostaApiKey,
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerEmail: order.customerEmail,
+          address1: order.address1,
+          address2: order.address2,
+          province: order.province,
+          orderNumber: order.orderNumber,
+          totalPrice: order.totalPrice,
+        });
+
+        if (bostaDelivery) {
+          await tx.order.update({
+            where: { id: orderId },
+            data: {
+              bostaDeliveryId: bostaDelivery._id,
+              bostaTrackingNumber: String(bostaDelivery.trackingNumber),
+              deliveryStatus: "DELIVERY_CREATED",
+            },
+          });
+          console.log(
+            `✅ Bosta delivery created and linked to order ${orderId}: ${bostaDelivery._id}`
+          );
+        }
+      } catch (err) {
+        console.error(
+          `❌ Failed to create Bosta delivery for order ${orderId}:`,
+          err.message
+        );
+        // Continue with Shopify fulfillment even if Bosta fails
+      }
+    } else {
+      console.log(
+        `ℹ️ Store ${order.store.name} does not have Bosta API key configured, skipping Bosta delivery creation`
+      );
+    }
+
     try {
       await fulfillOrder(
         order.store.shopDomain,

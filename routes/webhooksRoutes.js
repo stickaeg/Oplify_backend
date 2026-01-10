@@ -4,6 +4,7 @@ const {
   handleProductCreate,
   handleProductDelete,
   handleOrderCreate,
+  handleBostaWebhook,
 } = require("../controllers/webhook.controller");
 const { verifyShopifyWebhook } = require("../util/verifyShopifyWebhook");
 const router = express.Router();
@@ -34,6 +35,13 @@ router.post(
   express.raw({ type: "*/*" }), // <-- use wildcard to always get raw
   verifyShopifyWebhook,
   handleOrderCreate
+);
+
+// Bosta webhook endpoint - no auth for now (Phase 1)
+router.post(
+  "/bosta",
+  express.json(), // Parse JSON body
+  handleBostaWebhook
 );
 
 module.exports = router;
