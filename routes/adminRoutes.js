@@ -13,7 +13,11 @@ const {
   listVariantTitlesByProductType,
 } = require("../controllers/productTypeRule.controllers");
 
-const { createBatch } = require("../controllers/batches.controllers");
+const {
+  createBatch,
+  updateBatchRules,
+  getBatchRules,
+} = require("../controllers/batches.controllers");
 
 // Dashboard Controllers
 const {
@@ -54,6 +58,10 @@ router.delete("/rules/:id", deleteRule);
 
 // ----- Batches -----
 router.post("/batches", createBatch);
+
+router.patch("/batches/:batchId/rules", updateBatchRules);
+
+router.get("/batches/:batchId/rules", getBatchRules);
 
 // ----- MainStock -----
 router.post("/mainStock", createMainStock); // Create new main stock

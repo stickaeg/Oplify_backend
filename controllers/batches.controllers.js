@@ -58,7 +58,7 @@ async function createBatch(req, res) {
       countForThisName > 0
         ? `${baseName} - Batch #${countForThisName + 1}`
         : `${baseName} - Batch #1`;
-        
+
     // 🚀 4️⃣ Create batch with proper settings
     const batch = await prisma.batch.create({
       data: {
@@ -250,6 +250,166 @@ async function getBatchById(req, res) {
   } catch (err) {
     console.error("Error fetching batch details:", err);
     return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function updateBatchRules(req, res) {
+  try {
+    const { batchId } = req.params;
+    const {
+      ruleIdsToAdd = [],
+      ruleIdsToRemove = [],
+      maxCapacity, // optional
+    } = req.body;
+
+    console.log("updateBatchRules input:", {
+      batchId,
+      ruleIdsToAdd,
+      ruleIdsToRemove,
+      maxCapacity,
+    });
+
+    if (!batchId) {
+      return res.status(400).json({ error: "Batch ID is required" });
+    }
+
+    if (
+      (!Array.isArray(ruleIdsToAdd) || ruleIdsToAdd.length === 0) &&
+      (!Array.isArray(ruleIdsToRemove) || ruleIdsToRemove.length === 0) &&
+      typeof maxCapacity === "undefined"
+    ) {
+      return res.status(400).json({
+        error:
+          "Provide at least one of ruleIdsToAdd[], ruleIdsToRemove[] or maxCapacity",
+      });
+    }
+
+    // 1) Load batch with current rules
+    const batch = await prisma.batch.findUnique({
+      where: { id: batchId },
+      include: { rules: true },
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: "Batch not found" });
+    }
+
+    // 2) Load rules to add for validation
+    const rulesToAdd = ruleIdsToAdd.length
+      ? await prisma.productTypeRule.findMany({
+          where: { id: { in: ruleIdsToAdd } },
+        })
+      : [];
+
+    if (rulesToAdd.length !== ruleIdsToAdd.length) {
+      return res.status(400).json({
+        error: "Some ruleIdsToAdd do not exist",
+      });
+    }
+
+    // 3) VariantTitle compatibility (same logic as createBatch)
+    const allRulesAfterAdd = [...batch.rules, ...rulesToAdd];
+    const hasSpecificVariants = allRulesAfterAdd.some((r) => r.variantTitle);
+
+    if (hasSpecificVariants) {
+      const variantTitles = allRulesAfterAdd
+        .map((r) => r.variantTitle)
+        .filter(Boolean);
+      if (new Set(variantTitles).size > 1) {
+        return res.status(400).json({
+          error: "Cannot mix different variant titles in one batch",
+        });
+      }
+    }
+
+    // 4) Build connect / disconnect arrays
+    const existingIds = new Set(batch.rules.map((r) => r.id));
+
+    const connect = rulesToAdd
+      .filter((r) => !existingIds.has(r.id))
+      .map((r) => ({ id: r.id }));
+
+    const disconnect =
+      Array.isArray(ruleIdsToRemove) && ruleIdsToRemove.length > 0
+        ? ruleIdsToRemove.map((id) => ({ id }))
+        : [];
+
+    // 5) Build data object for Prisma update
+    const data = {
+      rules: {
+        ...(connect.length ? { connect } : {}),
+        ...(disconnect.length ? { disconnect } : {}),
+      },
+    };
+
+    if (typeof maxCapacity !== "undefined") {
+      // basic guard, adjust as you like
+      if (!Number.isInteger(maxCapacity) || maxCapacity <= 0) {
+        return res
+          .status(400)
+          .json({ error: "maxCapacity must be a positive integer" });
+      }
+      data.maxCapacity = maxCapacity;
+    }
+
+    const updatedBatch = await prisma.batch.update({
+      where: { id: batchId },
+      data,
+      include: { rules: true },
+    });
+
+    return res.status(200).json({
+      message: "Batch rules updated successfully",
+      batch: updatedBatch,
+    });
+  } catch (err) {
+    console.error("Error updating batch rules:", err);
+    return res
+      .status(500)
+      .json({ error: "Server error", details: err.message });
+  }
+}
+
+async function getBatchRules(req, res) {
+  try {
+    const { batchId } = req.params;
+    if (!batchId) {
+      return res.status(400).json({ error: "Batch ID is required" });
+    }
+
+    const batch = await prisma.batch.findUnique({
+      where: { id: batchId },
+      include: { rules: true },
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: "Batch not found" });
+    }
+
+    const currentRules = batch.rules;
+
+    return res.status(200).json({
+      batch: {
+        id: batch.id,
+        name: batch.name,
+        capacity: batch.capacity, // optional
+        maxCapacity: batch.maxCapacity, // so UI can edit
+      },
+      rules: currentRules.map((r) => ({
+        id: r.id,
+        name: r.name,
+        storeId: r.storeId,
+        variantTitle: r.variantTitle,
+        isPod: r.isPod,
+        requiresStock: r.requiresStock,
+        selected: true,
+      })),
+    });
+  } catch (err) {
+    console.error("Error fetching batch rules:", err);
+    return res
+      .status(500)
+      .json({ error: "Server error", details: err.message });
   }
 }
 
@@ -453,4 +613,6 @@ module.exports = {
   updateBatchStatus,
   autoUpdateBatchStatus,
   getBatchById,
+  updateBatchRules,
+  getBatchRules,
 };

@@ -86,9 +86,11 @@ async function assignOrderItemsToBatches(orderItems) {
 
       // 7️⃣ If no suitable batch exists, create a new one
       if (!availableBatch) {
+        // find the last batch for this rule, including its rules
         const lastBatch = await prisma.batch.findFirst({
           where: { rules: { some: { id: rule.id } } },
           orderBy: { createdAt: "desc" },
+          include: { rules: true },
         });
 
         const baseName = lastBatch
@@ -109,6 +111,11 @@ async function assignOrderItemsToBatches(orderItems) {
             ? baseName
             : `${baseName} - Batch #${countForThisName + 1}`;
 
+        // if lastBatch exists, copy all its rules; otherwise fall back to the single rule
+        const rulesToConnect = lastBatch?.rules?.length
+          ? lastBatch.rules.map((r) => ({ id: r.id }))
+          : [{ id: rule.id }];
+
         availableBatch = await prisma.batch.create({
           data: {
             name: newBatchName,
@@ -116,11 +123,16 @@ async function assignOrderItemsToBatches(orderItems) {
             capacity: 0,
             status: "PENDING",
             handlesStock: needsStockHandling,
-            rules: { connect: [{ id: rule.id }] },
+            rules: {
+              connect: rulesToConnect,
+            },
           },
         });
 
-        console.log(`🆕 Created new batch: ${availableBatch.name}`);
+        console.log(
+          `🆕 Created new batch: ${availableBatch.name} with rules:`,
+          rulesToConnect.map((r) => r.id)
+        );
       }
 
       // 8️⃣ Determine how many units to add
