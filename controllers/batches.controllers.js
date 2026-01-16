@@ -104,13 +104,30 @@ async function listBatches(req, res) {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const { ruleName } = req.query;
+    const { ruleName, startDate, endDate, search } = req.query;
 
     const where = {};
 
     if (ruleName) {
       // 🔍 filter by rule name
       where.rules = { some: { name: ruleName } };
+    }
+
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: "insensitive" } },
+        { rules: { some: { name: { contains: search, mode: "insensitive" } } } },
+      ];
     }
 
     const total = await prisma.batch.count({ where });
@@ -297,8 +314,8 @@ async function updateBatchRules(req, res) {
     // 2) Load rules to add for validation
     const rulesToAdd = ruleIdsToAdd.length
       ? await prisma.productTypeRule.findMany({
-          where: { id: { in: ruleIdsToAdd } },
-        })
+        where: { id: { in: ruleIdsToAdd } },
+      })
       : [];
 
     if (rulesToAdd.length !== ruleIdsToAdd.length) {
