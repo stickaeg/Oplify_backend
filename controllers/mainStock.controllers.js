@@ -411,7 +411,7 @@ async function assignProductQuantity(req, res) {
         locationId,
         inventoryItemId,
         quantity: qty,
-        name: "available",
+        name: "on_hand",
         reason: "correction",
         ignoreCompareQuantity: true,
       });

@@ -535,7 +535,7 @@ async function setInventoryQuantityExact(
     locationId, // gid://shopify/Location/...
     inventoryItemId, // gid://shopify/InventoryItem/...
     quantity, // absolute quantity you want in Shopify
-    name = "available", // "available" or "on_hand"
+    name = "on_hand", // "available" or "on_hand"
     reason = "correction",
     referenceDocumentUri = null,
     ignoreCompareQuantity = true, // overwrite without CAS
