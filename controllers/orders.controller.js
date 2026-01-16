@@ -2,7 +2,6 @@ const { createReplacementUnit } = require("../helpers/batchHelper");
 const { createReturnedItemWithTx } = require("../helpers/returnedItems");
 const updateOrderStatusFromItems = require("../helpers/updateOrderStatusFromItems");
 const prisma = require("../prisma/client");
-const { adjustMainStock } = require("../util/mainStockHelper");
 const { autoUpdateBatchStatus } = require("./batches.controllers");
 const { syncMainStocksToShopify } = require("./webhook.controller");
 
@@ -102,6 +101,8 @@ async function listOrders(req, res) {
           customerPhone: true,
           totalPrice: true,
           status: true,
+          bostaTrackingNumber: true,
+          deliveryStatus: true,
           createdAt: true,
           updatedAt: true,
           items: {
@@ -654,9 +655,128 @@ async function replaceUnit(req, res) {
   }
 }
 
+async function bulkUpdateOrderItemsStatus(req, res) {
+  try {
+    const { orderId } = req.params;
+    const { status } = req.body;
+
+    const validStatuses = [
+      "PENDING",
+      "BATCHED",
+      "WAITING_BATCH",
+      "DESIGNING",
+      "DESIGNED",
+      "PRINTING",
+      "PRINTED",
+      "CUTTING",
+      "CUT",
+      "FULFILLMENT",
+      "FULFILLED",
+      "PACKED",
+      "COMPLETED",
+      "RETURNED",
+      "CANCELLED",
+    ];
+
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        items: {
+          include: {
+            BatchItem: { include: { units: true, batch: true } },
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      for (const item of order.items) {
+        if (item.BatchItem && item.BatchItem.length > 0) {
+          const batchItemIds = item.BatchItem.map((bi) => bi.id);
+
+          // update all units for this item
+          await tx.batchItemUnit.updateMany({
+            where: { batchItemId: { in: batchItemIds } },
+            data: { status },
+          });
+
+          // recalc each BatchItem status from its units
+          const affectedBatchItems = await tx.batchItem.findMany({
+            where: { id: { in: batchItemIds } },
+            include: { units: true },
+          });
+
+          for (const batchItem of affectedBatchItems) {
+            const unitStatuses = batchItem.units.map((u) => u.status);
+            const derivedStatus = deriveStatusFromUnits(unitStatuses);
+            await tx.batchItem.update({
+              where: { id: batchItem.id },
+              data: { status: derivedStatus },
+            });
+          }
+
+          // recalc orderItem status from all its units
+          const allUnits = await tx.batchItemUnit.findMany({
+            where: { batchItem: { orderItemId: item.id } },
+            select: { status: true },
+          });
+
+          const orderItemStatus = deriveStatusFromUnits(
+            allUnits.map((u) => u.status)
+          );
+
+          await tx.orderItem.update({
+            where: { id: item.id },
+            data: { status: orderItemStatus },
+          });
+        } else {
+          // no batch/units: just update the item directly
+          await tx.orderItem.update({
+            where: { id: item.id },
+            data: { status },
+          });
+        }
+      }
+
+      // update overall order status from items
+      await updateOrderStatusFromItems(orderId, tx);
+    });
+
+    const updatedOrder = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        items: {
+          include: {
+            BatchItem: { include: { units: true, batch: true } },
+          },
+        },
+      },
+    });
+
+    return res.status(200).json({
+      message: `All order items updated to ${status}`,
+      order: updatedOrder,
+    });
+  } catch (err) {
+    console.error("❌ Error bulk-updating order items:", err);
+    return res.status(500).json({
+      message: "Failed to bulk update order items",
+      error: err.message,
+    });
+  }
+}
 module.exports = {
   listOrders,
   getOrderDetails,
   updateOrderItemStatus,
   replaceUnit,
+  bulkUpdateOrderItemsStatus,
 };

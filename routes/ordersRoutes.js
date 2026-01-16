@@ -4,6 +4,7 @@ const {
   getOrderDetails,
   updateOrderItemStatus,
   replaceUnit,
+  bulkUpdateOrderItemsStatus,
 } = require("../controllers/orders.controller");
 const { attachStoreScope } = require("../middleware/AuthMiddlewares");
 
@@ -14,6 +15,8 @@ router.get("/", attachStoreScope, listOrders);
 router.get("/:id", attachStoreScope, getOrderDetails);
 
 router.patch("/orderItems/:orderItemId/status", updateOrderItemStatus);
+
+router.post("/items/:orderId/bulk-status", bulkUpdateOrderItemsStatus);
 
 router.patch("/units/:unitId/replace", replaceUnit);
 
