@@ -104,7 +104,7 @@ async function listBatches(req, res) {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const { ruleName, startDate, endDate, search } = req.query;
+    const { ruleName, startDate, endDate, search, status } = req.query;
 
     const where = {};
 
@@ -126,14 +126,21 @@ async function listBatches(req, res) {
     if (search) {
       where.OR = [
         { name: { contains: search, mode: "insensitive" } },
-        { rules: { some: { name: { contains: search, mode: "insensitive" } } } },
+        {
+          rules: { some: { name: { contains: search, mode: "insensitive" } } },
+        },
       ];
+    }
+
+    // 🆕 ADD STATUS FILTER
+    if (status) {
+      where.status = status;
     }
 
     const total = await prisma.batch.count({ where });
 
     const batches = await prisma.batch.findMany({
-      where, // ✅ apply filter
+      where, // ✅ apply filter (including status)
       skip,
       take: limit,
       include: {
@@ -321,8 +328,8 @@ async function updateBatchRules(req, res) {
     // 2) Load rules to add for validation
     const rulesToAdd = ruleIdsToAdd.length
       ? await prisma.productTypeRule.findMany({
-        where: { id: { in: ruleIdsToAdd } },
-      })
+          where: { id: { in: ruleIdsToAdd } },
+        })
       : [];
 
     if (rulesToAdd.length !== ruleIdsToAdd.length) {
