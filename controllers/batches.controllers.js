@@ -133,6 +133,12 @@ async function listBatches(req, res) {
             units: true,
           },
         },
+        // 🆕 ADD FILE COUNT (efficient count, not full include)
+        _count: {
+          select: {
+            File: true, // ✅ Counts files linked to this batch
+          },
+        },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -145,6 +151,7 @@ async function listBatches(req, res) {
       status: batch.status,
       createdAt: batch.createdAt,
       qrCodeUrl: batch.qrCodeUrl,
+      fileCount: batch._count.File, // 🆕 File count from Prisma _count
       rules: batch.rules.map((r) => ({
         id: r.id,
         name: r.name,
@@ -495,7 +502,7 @@ async function updateBatchStatus(req, res) {
           ...new Set(
             updatedBatch.items
               .map((item) => item.orderItem?.orderId)
-              .filter(Boolean)
+              .filter(Boolean),
           ),
         ];
 
@@ -508,7 +515,7 @@ async function updateBatchStatus(req, res) {
     });
 
     console.log(
-      `✅ Batch ${batchId} and all related records updated to ${status}`
+      `✅ Batch ${batchId} and all related records updated to ${status}`,
     );
     res.json(batch);
   } catch (err) {
@@ -585,7 +592,7 @@ async function autoUpdateBatchStatus(batchId) {
       });
 
       console.log(
-        `🔄 Batch ${batchId} auto-updated: ${batch.status} → ${newStatus}`
+        `🔄 Batch ${batchId} auto-updated: ${batch.status} → ${newStatus}`,
       );
 
       if (newStatus === "BATCHED" && !batch.qrCodeUrl) {

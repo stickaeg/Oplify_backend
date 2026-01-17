@@ -1,13 +1,14 @@
 const { Storage } = require("@google-cloud/storage");
 const mime = require("mime-types");
 const prisma = require("../prisma/client");
+const archiver = require("archiver");
 
 const BUCKET_NAME = "oplify";
 
 // Use JSON credentials from environment
 if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
   const credentials = JSON.parse(
-    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON,
   );
 
   storage = new Storage({
@@ -94,11 +95,11 @@ const downloadFile = async (req, res) => {
     // 4️⃣ Set headers
     res.setHeader(
       "Content-Type",
-      metadata.contentType || "application/octet-stream"
+      metadata.contentType || "application/octet-stream",
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${fileRecord.name}"`
+      `attachment; filename="${fileRecord.name}"`,
     );
 
     // 5️⃣ Stream the file
@@ -109,8 +110,89 @@ const downloadFile = async (req, res) => {
   }
 };
 
+const downloadBatchFiles = async (req, res) => {
+  const { batchId } = req.params;
+
+  try {
+    // ✅ SEPARATE QUERIES - Bulletproof
+    const [batch, files] = await Promise.all([
+      prisma.batch.findUnique({ where: { id: batchId } }),
+      prisma.file.findMany({
+        where: { batchId },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+  
+    if (!batch) {
+      return res.status(404).json({ error: "Batch not found" });
+    }
+    if (files.length === 0) {
+      return res.status(404).json({ error: "No files found in batch" });
+    }
+
+    // Safe filename
+    const safeBatchName =
+      batch.name
+        ?.replace(/[^a-zA-Z0-9\s_-]/g, "")
+        ?.trim()
+        ?.substring(0, 100) || batchId;
+
+    // Headers
+    res.set({
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${safeBatchName}.zip"`,
+      "Content-Encoding": "identity",
+      "Cache-Control": "no-cache",
+      "Access-Control-Allow-Origin":
+        process.env.FRONTEND_URL || "http://localhost:5173",
+      "Access-Control-Allow-Credentials": "true",
+      Connection: "keep-alive",
+    });
+
+    const archive = archiver("zip", { zlib: { level: 6 } });
+
+    archive.on("error", (err) => {
+      console.error("💥 ARCHIVE ERROR:", err);
+      if (!res.headersSent) res.status(500).end();
+    });
+
+    archive.on("end", () => console.log(`✅ "${safeBatchName}.zip" complete`));
+
+    archive.pipe(res);
+
+    // Filter & process files with fileId
+    const validFiles = files.filter((f) => f.fileId);
+    for (const fileRecord of validFiles) {
+      const gcsFileName = fileRecord.fileId;
+      try {
+        const gcsFile = bucket.file(gcsFileName);
+        const [exists] = await gcsFile.exists();
+        if (!exists) {
+          console.log(`❌ GCS missing: ${gcsFileName}`);
+          continue;
+        }
+        console.log(`✅ Adding ${fileRecord.name}`);
+        const readStream = gcsFile.createReadStream();
+        readStream.on("error", (err) =>
+          console.error(`Stream error ${gcsFileName}:`, err),
+        );
+        archive.append(readStream, { name: fileRecord.name });
+      } catch (err) {
+        console.error(`GCS error ${gcsFileName}:`, err.message);
+      }
+    }
+
+    archive.finalize();
+  } catch (error) {
+    console.error("Download error:", error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = {
   uploadDesign,
   downloadFile,
   getFilesByBatch,
+  downloadBatchFiles,
 };

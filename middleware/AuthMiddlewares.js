@@ -41,7 +41,13 @@ function attachStoreScope(req, res, next) {
   }
 
   // ADMIN: allow storeId from query, optional
-  if (role === "ADMIN") {
+  if (
+    role === "ADMIN" ||
+    role === "PRINTER" ||
+    role === "CUTTER" ||
+    role === "FULLFILLMENT" ||
+    role === "DESIGNER"
+  ) {
     req.storeId = queryStoreId || null; // admin can filter or get all
     return next();
   }

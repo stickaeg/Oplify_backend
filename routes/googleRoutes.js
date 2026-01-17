@@ -5,6 +5,7 @@ const {
   getFilesByBatch,
   downloadFile,
   uploadDesign,
+  downloadBatchFiles,
 } = require("../controllers/google.controllers");
 const multer = require("multer");
 const upload = multer({ dest: "uploads/" }); // temp storage
@@ -22,8 +23,15 @@ router.get("/files/:batchId", getFilesByBatch);
 router.get(
   "/download/:fileId",
   requireRole(["DESIGNER", "ADMIN", "PRINTER"]),
-  downloadFile
+  downloadFile,
 );
+router.get(
+  "/downloadZip/:batchId",
+  requireRole(["DESIGNER", "ADMIN", "PRINTER"]),
+  downloadBatchFiles,
+);
+
+
 
 // Upload multiple files
 router.post(
@@ -96,7 +104,7 @@ router.post(
 
         // ✅ 5. Update units belonging to this batch
         const unitIds = batch.items.flatMap((item) =>
-          item.units.map((u) => u.id)
+          item.units.map((u) => u.id),
         );
 
         if (unitIds.length > 0) {
@@ -124,7 +132,7 @@ router.post(
         }
 
         console.log(
-          `✅ Batch ${batchId}, ${batch.items.length} items, and ${unitIds.length} units marked as DESIGNED`
+          `✅ Batch ${batchId}, ${batch.items.length} items, and ${unitIds.length} units marked as DESIGNED`,
         );
 
         return { uploadedFiles, batch, unitCount: unitIds.length };
@@ -150,7 +158,7 @@ router.post(
         details: error.message,
       });
     }
-  }
+  },
 );
 
 module.exports = router;

@@ -139,6 +139,8 @@ async function getCurrentUser(req, res) {
   }
 }
 
+
+
 module.exports = {
   createUser,
   loginUser,
