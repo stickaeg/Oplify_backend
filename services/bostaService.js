@@ -12,6 +12,7 @@ const { decrypt } = require("../lib/crypto");
  * @param {string} params.province - City/Governorate
  * @param {number} params.orderNumber - Order number for reference
  * @param {number} params.totalPrice - Total order price (for COD if applicable)
+ * @param {Array} params.orderItems - Array of order items to calculate items count
  * @returns {Promise<Object|null>} Bosta delivery response with _id and trackingNumber, or null on failure
  */
 async function createBostaDelivery({
@@ -25,6 +26,7 @@ async function createBostaDelivery({
   orderNumber,
   totalPrice,
   isPrepaid,
+  orderItems = [],
 }) {
   try {
     // Decrypt the API key
@@ -46,8 +48,11 @@ async function createBostaDelivery({
     // Calculate COD amount: 0 for prepaid orders, totalPrice for COD orders
     const codAmount = isPrepaid ? 0 : (totalPrice || 0);
 
+    // Calculate items count dynamically from order items
+    const itemsCount = orderItems.length || 1;
+
     console.log(
-      `💵 Order ${orderNumber} - Payment: ${isPrepaid ? "PREPAID (Visa/Card)" : "COD"}, COD Amount: ${codAmount} EGP`
+      `💵 Order ${orderNumber} - Payment: ${isPrepaid ? "PREPAID (Visa/Card)" : "COD"}, COD Amount: ${codAmount} EGP, Items: ${itemsCount}`
     );
 
     // Prepare Bosta delivery payload
@@ -57,7 +62,7 @@ async function createBostaDelivery({
         packageType: "Parcel",
         size: "SMALL",
         packageDetails: {
-          itemsCount: 1, // You can adjust this based on order items if needed
+          itemsCount,
         },
       },
       dropOffAddress: {
