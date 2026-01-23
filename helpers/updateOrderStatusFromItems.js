@@ -66,6 +66,44 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
     console.log(`🛑 Order ${orderId} cancelled, cancelling in Shopify...`);
     const decryptedToken = decrypt(order.store.accessToken);
 
+    // 🚚 Cancel Bosta delivery if it exists
+    if (order.bostaDeliveryId && order.store.bostaApiKey) {
+      try {
+        const { cancelBostaDelivery } = require("../services/bostaService");
+
+        const cancelled = await cancelBostaDelivery({
+          bostaApiKey: order.store.bostaApiKey,
+          bostaDeliveryId: order.bostaDeliveryId,
+          orderNumber: order.orderNumber,
+        });
+
+        if (cancelled) {
+          // Update delivery status to CANCELLED
+          await tx.order.update({
+            where: { id: orderId },
+            data: {
+              deliveryStatus: "CANCELLED",
+            },
+          });
+          console.log(`✅ Bosta delivery cancelled for order ${orderId}`);
+        } else {
+          console.warn(
+            `⚠️ Failed to cancel Bosta delivery for order ${orderId}, but continuing with order cancellation`
+          );
+        }
+      } catch (err) {
+        console.error(
+          `❌ Error cancelling Bosta delivery for order ${orderId}:`,
+          err.message
+        );
+        // Continue with Shopify cancellation even if Bosta fails
+      }
+    } else if (order.bostaDeliveryId) {
+      console.log(
+        `ℹ️ Order ${orderId} has Bosta delivery but store doesn't have Bosta API key configured`
+      );
+    }
+
     try {
       await cancelOrder(
         order.store.shopDomain,

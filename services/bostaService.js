@@ -119,6 +119,73 @@ async function createBostaDelivery({
   }
 }
 
+/**
+ * Cancel a Bosta delivery via API
+ * @param {Object} params - Cancellation parameters
+ * @param {string} params.bostaApiKey - Encrypted Bosta API key
+ * @param {string} params.bostaDeliveryId - Bosta delivery ID to cancel
+ * @param {number} params.orderNumber - Order number for logging reference
+ * @returns {Promise<boolean>} true if cancelled successfully, false on failure
+ */
+async function cancelBostaDelivery({
+  bostaApiKey,
+  bostaDeliveryId,
+  orderNumber,
+}) {
+  try {
+    // Decrypt the API key
+    const apiKey = decrypt(bostaApiKey);
+
+    // Validate required fields
+    if (!bostaDeliveryId) {
+      console.warn(
+        `⚠️ Cannot cancel Bosta delivery for order ${orderNumber}: missing delivery ID`
+      );
+      return false;
+    }
+
+    console.log(
+      `🛑 Cancelling Bosta delivery ${bostaDeliveryId} for order ${orderNumber}...`
+    );
+
+    // Call Bosta API to cancel delivery
+    // Using DELETE method as per REST API standard pattern
+    const response = await fetch(
+      `https://app.bosta.co/api/v2/deliveries/${bostaDeliveryId}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: apiKey,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        `❌ Bosta API error cancelling delivery for order ${orderNumber}:`,
+        response.status,
+        errorText
+      );
+      return false;
+    }
+
+    console.log(
+      `✅ Bosta delivery ${bostaDeliveryId} cancelled successfully for order ${orderNumber}`
+    );
+
+    return true;
+  } catch (err) {
+    console.error(
+      `❌ Failed to cancel Bosta delivery for order ${orderNumber}:`,
+      err.message
+    );
+    return false;
+  }
+}
+
 module.exports = {
   createBostaDelivery,
+  cancelBostaDelivery,
 };
