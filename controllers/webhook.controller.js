@@ -213,6 +213,7 @@ async function handleOrderCreate(req, res) {
           totalPrice: orderData.current_total_price
             ? parseFloat(orderData.current_total_price)
             : null,
+          isPrepaid: orderData.financial_status === "paid",
           shopifyCurrency: orderData.currency || null,
           shopifyTransactions: JSON.stringify(orderData.transactions || []),
           shopifyLocationId: store.shopifyLocationId || null,

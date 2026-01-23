@@ -154,6 +154,7 @@ async function updateOrderStatusFromItems(orderId, tx = prisma) {
           province: order.province,
           orderNumber: order.orderNumber,
           totalPrice: order.totalPrice,
+          isPrepaid: order.isPrepaid,
         });
 
         if (bostaDelivery) {

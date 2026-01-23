@@ -41,6 +41,7 @@ model Order {
   address2       String?
   province       String?
   totalPrice     Float?
+  isPrepaid      Boolean?    // Whether order was prepaid (Visa/card) vs COD
   status         Status      @default(PENDING)
 
   shopifyCurrency        String?     // "USD", "EGP"

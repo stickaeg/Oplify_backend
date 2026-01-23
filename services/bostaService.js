@@ -24,6 +24,7 @@ async function createBostaDelivery({
   province,
   orderNumber,
   totalPrice,
+  isPrepaid,
 }) {
   try {
     // Decrypt the API key
@@ -41,6 +42,13 @@ async function createBostaDelivery({
     const nameParts = (customerName || "Customer").trim().split(" ");
     const firstName = nameParts[0] || "Customer";
     const lastName = nameParts.slice(1).join(" ") || "";
+
+    // Calculate COD amount: 0 for prepaid orders, totalPrice for COD orders
+    const codAmount = isPrepaid ? 0 : (totalPrice || 0);
+
+    console.log(
+      `💵 Order ${orderNumber} - Payment: ${isPrepaid ? "PREPAID (Visa/Card)" : "COD"}, COD Amount: ${codAmount} EGP`
+    );
 
     // Prepare Bosta delivery payload
     const deliveryPayload = {
@@ -64,6 +72,7 @@ async function createBostaDelivery({
         phone: customerPhone,
         email: customerEmail || "",
       },
+      cod: codAmount,
       webhookUrl: `${process.env.HOST}/webhooks/bosta`,
       businessReference: String(orderNumber || ""),
     };
