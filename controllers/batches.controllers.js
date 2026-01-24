@@ -132,15 +132,23 @@ async function listBatches(req, res) {
       ];
     }
 
-    // 🆕 ADD STATUS FILTER
+    // 🆕 MULTIPLE STATUS FILTER (comma-separated)
     if (status) {
-      where.status = status;
+      const statusArray = status
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (statusArray.length > 0) {
+        where.status = {
+          in: statusArray,
+        };
+      }
     }
 
     const total = await prisma.batch.count({ where });
 
     const batches = await prisma.batch.findMany({
-      where, // ✅ apply filter (including status)
+      where, // ✅ apply filter (including multiple statuses)
       skip,
       take: limit,
       include: {
